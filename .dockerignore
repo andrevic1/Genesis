@@ -1,0 +1,11 @@
+docker/
+.git
+doc/
+logs/
+video/
+*.png
+*.mp4
+*.csv
+*.lock
+__pycache__/
+*.ipynb

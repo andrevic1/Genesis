@@ -1,9 +1,9 @@
 from typing import Literal
-
 import numpy as np
 import torch
 import taichi as ti
-
+import xml.etree.ElementTree as ET
+from pathlib import Path
 import genesis as gs
 import genesis.utils.geom as gu
 from genesis.utils.misc import ti_field_to_torch, DeprecationError, ALLOCATE_TENSOR_WARNING
@@ -89,6 +89,19 @@ class RigidSolver(Solver):
         self._options = options
 
         self._cur_step = -1
+
+        self._aero_enabled: bool   = False   # abilita aerodinamica
+        self._aero_log: bool       = False   # salva campi debug
+
+        # Target & device
+        self._aero_targets: list[gs.Entity] = []
+        self._aero_device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._geom:   list[tuple] = []      # riempito da _parse_urdf()
+        self.L: int   = 0                   # num superfici aerodinamiche
+
+        # Aerodynamic constants
+        self._const_init()
+        self._param = {}
 
     def add_entity(self, idx, material, morph, surface, visualize_contact):
         if isinstance(material, gs.materials.Avatar):
@@ -212,6 +225,8 @@ class RigidSolver(Solver):
             self._init_invweight()
             self._kernel_init_meaninertia()
 
+        self._alloc_aero_param_fields()
+
     def _init_invweight(self):
         self._kernel_forward_dynamics()
 
@@ -258,6 +273,589 @@ class RigidSolver(Solver):
                 invweight[i_link] = (A[0, 0] + A[1, 1] + A[2, 2]) / 3
 
         self._kernel_init_invweight(invweight)
+
+
+    # SECTION AERODYNAMIC
+    def _const_init(self):
+        self._aero_base = dict(
+            rho             = 1.225,
+            cl_alpha_2d     = 3*ti.math.pi, #2*ti.math.pi,
+            alpha_stall_deg = 10.0,
+            alpha0_2d       = -0*ti.math.pi/180, #-3.0*ti.math.pi/180,
+            alpha0_2d_fus   = 0.0,
+            cd0             = 0.05,
+            cd0_fus         = 0.25,
+            m_smooth        = 0.2,
+            max_thrust      = 4.0,
+            cp_start        = 0.25,
+            cp_end          = 0.50,
+            cg_to_chord     = 0.31,
+            prop_cutoff_hz  = 1.0,
+            k_eps_tail      = 0.10,
+            k_slip_fus      = 0.2,
+            k_slip_tail     = 0.1,
+            k_slip_wing     = 0.5,
+            kappa_prop      = 0.01,
+        )
+        self._aero_names  = tuple(self._aero_base.keys())
+
+        self._enable_noise = False
+        self.noise_sigma_mag = 0.05
+        self.noise_sigma_dir = 0.05
+        self.k_alpha = 6.0      # rad^-1
+        self.k_beta  = 2.0      # rad^-1
+        self.noise_scale_max = 4.0
+
+        # nomi dei link nel tuo URDF (in ordine!)
+        self._aero_frames = [
+            "aero_frame_fuselage",
+            "aero_frame_left_wing_prop",   "aero_frame_left_wing_free",
+            "aero_frame_right_wing_prop",  "aero_frame_right_wing_free",
+            "aero_frame_elevator_left",    "aero_frame_elevator_right",
+            "aero_frame_rudder",
+            "prop_frame_fuselage_0",
+        ]
+
+    def _parse_urdf(self, urdf_file: str):
+        self._urdf_path = Path(urdf_file)
+        root = ET.parse(self._urdf_path).getroot()
+
+        # --- genes metadata ---------------------------------------------------
+        meta = root.find(".//metadata[@type='genes']")
+        if meta is not None:
+            order = meta.get("order", "").split()
+            vals  = list(map(float, meta.get("value", "").split()))
+            self.genes      = vals
+            self.genes_dict = dict(zip(order, vals))
+        else:
+            self.genes = []
+            self.genes_dict = {}
+
+        self.sweep_multi = self.genes_dict.get("sweep_multi", 2.0)
+        self.twist_multi = self.genes_dict.get("twist_multi", 2.5)
+        for key in ("cl_alpha_2d", "alpha0_2d"):
+            if key in self.genes_dict:
+                self._aero_base[key] = self.genes_dict[key]
+
+        box = lambda ln: list(map(float, root.find(f".//link[@name='{ln}']/collision/geometry/box").get("size").split()))
+        xyz = lambda ln: list(map(float, root.find(f".//link[@name='{ln}']/inertial/origin").get("xyz").split()))
+
+        # --- fusoliera ---------------------------------------------------
+        sx, _, sz = box("fuselage")
+        S_fus, c_fus = sx * sz * 4 * 4, sz * 4
+        cg_x = xyz("fuselage")[0]
+
+        self.cg_fus_local_x = cg_x
+
+        # --- ali ---------------------------------------------------------
+        #  pannello "prop": span = 0.050 m ;  pannello "free": span = 0.650 m
+        #  ricaviamo la c_effe e il box.y di ciascun link
+        _, c_wp, sp_wp = box("right_wing_prop")
+        _, c_wf, sp_wf = box("right_wing_free")      # stessa c_ ma span più lungo
+
+        S_lw_prop  = c_wp * sp_wp      ;  AR_lw_prop  = sp_wp / c_wp
+        S_lw_free  = c_wf * sp_wf      ;  AR_lw_free  = sp_wf / c_wf
+        #  copia per il lato destro (stesse dimensioni)
+        S_rw_prop, AR_rw_prop = S_lw_prop, AR_lw_prop
+        S_rw_free, AR_rw_free = S_lw_free, AR_lw_free
+
+        # --- elevator (due metà) ----------------------------------------
+        _, c_el, sp_el = box("elevator_left")
+        S_el, AR_el = c_el * sp_el, sp_el / c_el
+        S_er, AR_er = S_el, AR_el
+
+        # --- rudder ------------------------------------------------------
+        _, c_r, sp_r = box("rudder")
+        S_r, AR_r = c_r * sp_r, sp_r / c_r
+        cz_r = xyz("rudder")[2] + 0.5 * S_r / c_r
+        self.cz_rudder = cz_r
+
+        diam_prop = box("prop_frame_fuselage_0")[0]
+        self.prop_radius = diam_prop / 2.0
+
+        self._geom = [
+            #  kind: 0=fusoliera | 1=ala | 2=elevator | 3=timone | 4=elica
+            (S_fus, S_fus / c_fus / c_fus, c_fus, 0),
+
+            (S_lw_prop,  AR_lw_prop,   c_wp, 1),
+            (S_lw_free,  AR_lw_free,   c_wf, 1),
+            (S_rw_prop,  AR_rw_prop,   c_wp, 1),
+            (S_rw_free,  AR_rw_free,   c_wf, 1),
+
+            (S_el, AR_el, c_el, 2),    # elevator left
+            (S_er, AR_er, c_el, 2),    # elevator right
+
+            (S_r,  AR_r,  c_r,  3),    # rudder
+            (0.0,  1.0,  0.0,  4),    # propeller (placeholder)
+        ]
+
+        # AR wing total
+        self.AR_wing = (sp_wp + sp_wf) / (c_wp)
+
+        print(f"AerodynamicSolver: parsed URDF {self._urdf_path.name}")
+        print(f"AerodynamicSolver: found {len(self._geom)} surfaces:")
+        for i, (S, AR, c, k) in enumerate(self._geom):
+            kind = ["fusoliera", "ala", "elevatore", "timone", "elica"][k]
+            print(f"  - {kind} (S={S:.3f}, AR={AR:.3f}, c={c:.3f})")
+
+
+    def _alloc_aero_param_fields(self):
+        if not hasattr(self, "_aero_base"):
+            return
+        for name, val in self._aero_base.items():
+            f = ti.field(dtype=ti.f32, shape=(self._B,))
+            for b in range(self._B):
+                f[b] = val
+            self._param[name] = f
+            setattr(self, name, f)        # accesso diretto: self.rho[b]
+
+    # ======================================================================
+    # 2) add_target
+    # ======================================================================
+    def add_target(self, ent, urdf_file: str | None = None):
+        """
+        Registra un’entità come “bersaglio” dell’aerodinamica e alloca
+        tutti i campi Taichi necessari *prima* della compilazione dei kernel.
+        """
+        # --------- memorizza entità e lista link aero ---------------------
+        self._aero_targets.append(ent)
+        self._aero_link_idx = [ent.get_link(n).idx for n in self._aero_frames]
+
+        # --------- estrai geometrie dal relativo URDF ---------------------
+        if urdf_file is not None:
+            self._parse_urdf(urdf_file)     # popola self._geom
+        if not self._geom:
+            raise RuntimeError(
+                "add_target: `_geom` vuoto. Passa un URDF valido o invoca "
+                "_parse_urdf() prima di add_target()."
+            )
+        self.L = len(self._geom)  
+        self.force_b  = ti.Vector.field(3, ti.f16, shape=(self._B, self.n_links_))
+        self.cp_b     = ti.Vector.field(3, ti.f16, shape=(self._B, self.n_links_))
+        self._thr_raw = ti.field(ti.f16, shape=self._B)
+        self._thr_flt = ti.field(ti.f16, shape=self._B)
+        self.B = self._B
+
+        self.alpha_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
+        self.beta_dbg  = ti.field(ti.f16, shape=(self._B, self.n_links_))
+        self.lift_dbg  = ti.field(ti.f16, shape=(self._B, self.n_links_))
+        self.drag_dbg  = ti.field(ti.f16, shape=(self._B, self.n_links_))
+        self.side_force_dbg = ti.field(ti.f16, shape=(self._B, self.n_links_))
+        self.cl_wing_b = ti.field(ti.f16, shape=(self._B, 2))
+        self.alpha_prev_b = ti.field(ti.f16, shape=(self._B, 2))
+        self.v_ind = ti.field(ti.f16, shape=self._B)
+        self.slip_code = ti.field(ti.i8, shape=self.L)
+        # --------- campi costanti per il kernel ---------------------------
+        self.area      = ti.field(ti.f16, shape=self.L)
+        self.AR        = ti.field(ti.f16, shape=self.L)
+        self.chord     = ti.field(ti.f16, shape=self.L)
+        self.kind      = ti.field(ti.i16, shape=self.L)
+        self.side      = ti.field(ti.i8 , shape=self.L)
+        self._link_idx = ti.field(ti.i16, shape=self.L)
+
+        for i, (S, AR, c, k) in enumerate(self._geom):
+            self.area[i]      = S
+            self.AR[i]        = AR
+            self.chord[i]     = c
+            self.kind[i]      = k
+            self._link_idx[i] = self._aero_link_idx[i]
+            if self._aero_frames[i].endswith("_elevator_left"):
+                self.side[i] = -1
+            elif self._aero_frames[i].endswith("_elevator_right"):
+                self.side[i] = +1
+            elif self._aero_frames[i].endswith("_right_wing_free"):
+                self.side[i] = 1
+            elif self._aero_frames[i].endswith("_left_wing_free"):
+                self.side[i] = -1
+            if k == 0:                       # fusoliera
+                self.slip_code[i] = 0
+            elif k == 2:                     # tail (elevator L/R)
+                self.slip_code[i] = 1
+            elif (k == 1 and                # pannelli d’ala
+                self._aero_frames[i].endswith("_wing_prop")):
+                self.slip_code[i] = 2
+            else:                            # tutti gli altri
+                self.slip_code[i] = 3
+
+        # --------- attiva aerodinamica ------------------------------------
+        self._aero_enabled = True
+
+    # ======================================================================
+    # 3) set_throttle
+    # ======================================================================
+    def set_throttle(self, thr: torch.Tensor | float):
+        """
+        Imposta il comando gas/propulsore.
+        Accetta scalare o tensor; fa il broadcast sul batch.
+        """
+        if torch.is_tensor(thr):
+            t = thr.flatten().to(self._aero_device)
+            t = t.expand(self.B) if t.numel() == 1 else t
+            self._thr_raw.from_numpy(t.float().cpu().numpy())
+        else:
+            self._thr_raw.from_numpy(
+                float(thr) * torch.ones(self.B).cpu().numpy()
+            )
+
+
+    # ======================================================================
+    # 4) _aero_step
+    # ======================================================================
+    def _aero_step(self):
+        """
+        Esegue un singolo passo aerodinamico:
+        * calcola forze/momenti con il kernel
+        * applica le forze ai link corrispondenti
+        * (opz.) salva i campi di debug
+        """
+        if not self._aero_targets:
+            return
+
+        self._aero_compute_kernel()
+
+        fb = self.force_b.to_torch(device=self._aero_device)[:, :len(self._aero_link_idx), :]
+        cp = self.cp_b.to_torch(device=self._aero_device)[:, :len(self._aero_link_idx), :]
+
+        tq = torch.zeros_like(fb)          # stessa shape [B, L, 3]
+        thrust = fb[:, -1, 2]              # componente +Z in body (spinta)
+        tq[:, -1, 2] = -(self.kappa_prop.to_torch(device=self._aero_device)) * thrust
+        '''
+        if self.B == 1:
+            for i in range(len(self._aero_link_idx)):
+                print(f"Applying on {self._aero_frames[i]} aero force {fb[0, i]} at cp {cp[0, i]}")
+            print(f"Applying on {self._aero_frames[-1]} aero torque {tq[0, -1]}")
+        '''
+        self.apply_external_force_link_frame(force=fb, pos=cp, links_idx=self._aero_link_idx)
+        self.apply_external_torque_link_frame(torque=tq,
+                                            links_idx=self._aero_link_idx)
+        if self._aero_log:
+            self._aero_collect_debug()
+
+    @ti.func
+    def _wind_in_body(self, link_idx, b):
+        v_w = -self.links_state[link_idx, b].vel             # vento world
+        q   = self.links_state[link_idx, b].quat             # body→world
+        R_bw = gu.ti_quat_to_R(q).transpose()                # world→body
+        v_b  = R_bw @ v_w                                    # vento body
+        return v_b
+    
+    @ti.func
+    def _beta_cos2(self, beta):        # helper compatto
+        c = ti.cos(beta)
+        return c * c
+
+    @ti.func
+    def _rot_yz(self, alpha, beta):
+        # R_y(-α) @ R_z(β)   (verso aeronautico classico)
+        return self._rot_y(-alpha) @ self._rot_z(beta)
+
+    @ti.func
+    def _slipstream_induced_vx(self, rho, T, u):
+        # Equazione di Selig: V_ind = (-u + sqrt(u^2 + 2T/(ρπR^2)))/2
+        return (ti.sqrt(u*u + 2.0*T /
+                (rho * ti.math.pi * self.prop_radius**2)) - u) * 0.5
+
+    # ======================================================================
+    # 5) _aero_compute_kernel
+    # ======================================================================
+    @ti.kernel
+    def _aero_compute_kernel(self):
+
+        # ---------- 0. Low-pass sul throttle ----------------------------------
+        for b in range(self.B):
+            alpha_lpf = self._substep_dt / (self._substep_dt + 1.0 /
+                                            (2.0 * ti.math.pi * self.prop_cutoff_hz[b]))
+            self._thr_flt[b] += alpha_lpf * (self._thr_raw[b] - self._thr_flt[b])
+            T_prop = self._thr_flt[b] * self.max_thrust[b]
+            prop_link = self._aero_link_idx[-1]   # ultimo del tuo elenco
+            u = ti.abs(self.links_state[prop_link, b].vel.x)
+            self.v_ind[b] = self._slipstream_induced_vx(self.rho[b], T_prop, u)
+
+        # ---------- 2. PRIMO PASS: tutte le superfici tranne il tail ----------
+        for b, l in ti.ndrange(self.B, self.L):
+
+            self.force_b[b, l] = ti.Vector.zero(ti.f16, 3)
+            self.cp_b[b, l]    = ti.Vector.zero(ti.f16, 3)
+
+            if self.kind[l] == 2:                       # ⇒ tail: salta nel pass-2
+                continue
+
+            v  = self._wind_in_body(self._link_idx[l], b)
+            
+            slip = 0.0
+            if self.slip_code[l] == 0:      # fusoliera
+                slip = self.k_slip_fus[b]
+            elif self.slip_code[l] == 1:    # tail
+                slip = self.k_slip_tail[b]
+            elif self.slip_code[l] == 2:    # wing-prop
+                slip = self.k_slip_wing[b]
+            v.x -= slip * self.v_ind[b]
+
+            V  = v.norm() + 1e-6
+            alpha  = ti.atan2(v.z, v.x)
+            beta  = ti.asin(ti.math.clamp(v.y / V, -1.0, 1.0))
+
+            cl, cd = self._coeff(b, self.AR[l], alpha, beta, self.kind[l])
+
+            # — calcolo base L/D/… ------------------------------------------------
+            cosb2 = self._beta_cos2(beta)
+            cosa2 = self._beta_cos2(alpha)
+            L = 0.5 * self.rho[b] * self.area[l] * cl * V * V
+            D = 0.5 * self.rho[b] * self.area[l] * cd * V * V
+            S = 0.5 * self.rho[b] * self.area[l] * cl * V * V
+
+            Fb  = ti.Vector.zero(ti.f16, 3)
+            cp  = ti.Vector.zero(ti.f16, 3)
+
+            if self.kind[l] == 4:                           # elica
+                Fb = ti.Vector([0.0, 0.0, 1.0]) * self._thr_flt[b] * self.max_thrust[b]
+
+            elif self.kind[l] == 3:                         # rudder
+                Fb = self._rot_yz(alpha,  beta) @ ti.Vector([D*cosa2, S*cosa2, 0.0])
+                cp = self._cp_rudder(b, beta, l)
+
+            else:                                           # fusoliera / ala
+                Fb = self._rot_yz(alpha, beta) @ ti.Vector([D*cosb2, 0.0, L*cosb2])
+                if self.kind[l] == 1:                       # ala
+                    idx = 0 if self.side[l] == 1 else 1
+                    self.cl_wing_b[b, idx] = cl
+                    cp = self._cp_wing(b, alpha, l)
+                else:                                       # fusoliera
+                    cp = self._cp_fus(b, alpha, l)
+
+            self.force_b[b, l] = Fb
+            self.cp_b[b, l]    = cp
+
+            # debug opzionale
+            if self._aero_log:
+                self.alpha_dbg[b, l] = alpha
+                self.beta_dbg[b, l]  = beta
+                self.lift_dbg[b, l]  = L
+                self.drag_dbg[b, l]  = D
+                self.side_force_dbg[b, l] = S
+
+        # ---------- 3. SECONDO PASS: solo elevatore / tail --------------------
+        for b, l in ti.ndrange(self.B, self.L):
+
+            if self.kind[l] != 2:
+                continue                                   # già fatto
+
+            v  = self._wind_in_body(self._link_idx[l], b)
+
+            slip = 0.0
+            if self.slip_code[l] == 0:
+                slip = self.k_slip_fus[b]
+            elif self.slip_code[l] == 1:
+                slip = self.k_slip_tail[b]
+            elif self.slip_code[l] == 2:
+                slip = self.k_slip_wing[b]
+            v.x -= slip * self.v_ind[b]
+
+            V  = v.norm() + 1e-6
+            alphat = ti.atan2(v.z, v.x)
+            betat = ti.asin(ti.math.clamp(v.y / V, -1.0, 1.0))
+
+            idx  = 0 if self.side[l] ==  1 else 1     # stesso criterio
+            cl_w = self.cl_wing_b[b, idx]
+            
+            alpha_eff = self._alpha_downwash(b, alphat, cl_w, self.AR_wing)
+
+            cl, cd = self._coeff(b, self.AR[l], alpha_eff, betat, kind=2)
+            cosb2 = self._beta_cos2(betat)
+            L = 0.5 * self.rho[b] * self.area[l] * cl * V * V *cosb2
+            D = 0.5 * self.rho[b] * self.area[l] * cd * V * V *cosb2
+
+            Fb = self._rot_yz(alpha_eff, betat) @ ti.Vector([D, 0.0, L])
+            cp = self._cp_elev(b, alpha_eff, l)
+
+            self.force_b[b, l] = Fb
+            self.cp_b[b, l]    = cp
+
+            # debug opzionale
+            if self._aero_log:
+                self.alpha_dbg[b, l] = alpha_eff
+                self.beta_dbg[b, l]  = betat
+                self.lift_dbg[b, l]  = L
+                self.drag_dbg[b, l]  = D
+                self.side_force_dbg[b, l] = 0
+                self.cp_b[b, l] = cp
+
+        if self._enable_noise:
+            self.noise_addition()
+
+    @ti.func
+    def _sigma_scale(self, alpha, beta):
+        scale = 1.0 + self.k_alpha * ti.abs(alpha) + self.k_beta * ti.abs(beta)
+        return ti.min(scale, self.noise_scale_max)       # clamp
+
+    def randomize_aero_params(self, envs_idx, sigma=None):
+        """
+        envs_idx : 1-D torch.Tensor (dtype=int64) con gli indici degli env.
+        sigma    : std del rumore moltiplicativo (default = self.noise_sigma_mag)
+        """
+        if sigma is None:
+            sigma = self.noise_sigma_mag
+        if len(envs_idx) == 0:
+            return
+
+        envs_np = envs_idx.cpu().numpy()
+
+        # ciclo sulle costanti aerodinamiche
+        for k, base_val in self._aero_base.items():
+            fld = self._param[k]                   # ScalarField (shape = (B,))
+            arr = fld.to_numpy()                   # copia host
+            arr[envs_np] = base_val                # reset valore nominale
+            if sigma > 0:
+                arr[envs_np] *= 1.0 + sigma * np.random.randn(len(envs_np))
+            fld.from_numpy(arr)
+
+    @ti.func
+    def noise_addition(self):
+        sig_mag_base = self.noise_sigma_mag      # costanti definite in _const_init
+        sig_dir_base = self.noise_sigma_dir
+
+        for b, l in ti.ndrange(self.B, (self.L)):
+            F = ti.cast(self.force_b[b, l], ti.f32)   # calcoli in f32
+            mag = F.norm()
+
+            if mag > 0.0:
+                v  = self._wind_in_body(self._link_idx[l], b)
+                V  = v.norm() + 1e-6
+                alpha = ti.atan2(v.z, v.x)
+                beta = ti.asin(ti.math.clamp(v.y / V, -1.0, 1.0))
+
+                if self.kind[l] == 3:
+                    beta_r = alpha
+                    alpha_r = beta
+                    alpha = alpha_r
+                    beta = beta_r
+
+                s  = self._sigma_scale(alpha, beta)       # fattore 1–3
+
+                sig_mag = sig_mag_base * s
+                sig_dir = sig_dir_base * s
+
+                if self.kind[l] == 4:
+                    sig_mag = sig_mag_base
+                    sig_dir = 0
+                    continue
+                # --- rumore sul modulo ----------------------------------------
+                mag_n = mag * (1.0 + sig_mag * ti.randn(ti.f32))
+
+                # --- rumore sulla direzione ------------------------------------
+                g = ti.Vector([ti.randn(ti.f32),  # vettore gaussiano
+                            ti.randn(ti.f32),
+                            ti.randn(ti.f32)])
+                # rendilo ortogonale a F
+                g -= (g.dot(F) / (mag * mag)) * F
+                g = g.normalized(1e-6)
+
+                dir_n = (F / mag + sig_dir * g).normalized(1e-6)
+
+                # --- forza finale ----------------------------------------------
+                F_new = dir_n * mag_n
+                self.force_b[b, l] = ti.cast(F_new, ti.f16)  # torna al dtype originale
+
+    # ======================================================================
+    # 6) _aero_collect_debug  (NUOVA)
+    # ======================================================================
+    def _aero_collect_debug(self):
+        """
+        Copia i campi di debug su CPU e li mette in `self._dbg`.
+        Puoi poi salvarli su disco o usarli come preferisci.
+        """
+        self._dbg = dict(
+            alpha = self.alpha_dbg.to_numpy(),
+            beta  = self.beta_dbg.to_numpy(),
+            lift  = self.lift_dbg.to_numpy(),
+            drag  = self.drag_dbg.to_numpy(),
+            side_force = self.side_force_dbg.to_numpy(),
+            cp_offset = self.cp_b.to_numpy(),
+
+        )
+
+    # ------------- helper ti.func -------------
+    @ti.func
+    def _alpha_downwash(self, b, alpha_tail, cl_wing_mean, AR_wing):
+        """
+        Ritorna l'angolo di attacco effettivo sul piano di coda
+        tenendo conto del down-wash prodotto dall’ala.
+            α_eff = α_tail – ε,
+            ε     = k_eps_tail * CL_w / (π AR_w)
+        """
+        eps = self.k_eps_tail[b] * cl_wing_mean / (ti.math.pi * AR_wing)
+        return alpha_tail - eps
+
+    @ti.func
+    def _smooth(self, b, a):
+        deg = a * 180 / ti.math.pi
+        cut = self.alpha_stall_deg[b]
+        m   = self.m_smooth[b]
+        num = 1 + ti.exp(-m * (deg - cut)) + ti.exp(m * (deg + cut))
+        den = (1 + ti.exp(-m * (deg - cut))) * (1 + ti.exp(m * (deg + cut)))
+        return num / den
+
+    @ti.func
+    def _coeff(self, b, AR, alpha, beta, kind):
+        if kind == 3:
+            alpha = beta
+        cd0 = self.cd0[b]
+        # if fusoliera use cd0 = cd0_fus
+        if kind == 0:
+            cd0 = self.cd0_fus[b]
+        cl_a = self.cl_alpha_2d[b] * AR / (2 + ti.sqrt(AR * AR + 4))
+        ref   = self.alpha0_2d_fus[b] if (kind == 0 or kind == 3) else self.alpha0_2d[b]
+        cl_lin= cl_a * (alpha - ref)
+        cd_lin= cd0 + cl_lin * cl_lin / (ti.math.pi * AR)
+        cl_st = 2 * ti.sin(alpha) * ti.cos(alpha)
+        cd_st = 2 * ti.sin(alpha) * ti.sin(alpha)
+        blend     = self._smooth(b, alpha)
+        return (1 - blend) * cl_lin + blend * cl_st, (1 - blend) * cd_lin + blend * cd_st
+
+    @ti.func
+    def _rot_y(self, theta):
+        c, s = ti.cos(theta), ti.sin(theta)
+        # R_y(θ) = [[ cos, 0, sin],
+        #           [   0, 1,   0],
+        #           [-sin, 0, cos]]
+        return ti.Matrix([[ c,   0.0,  s   ],
+                          [ 0.0, 1.0, 0.0  ],
+                          [-s,   0.0,  c   ]])
+
+    @ti.func
+    def _rot_z(self, phi):
+        c, s = ti.cos(phi), ti.sin(phi)
+        # R_z(φ) = [[cos, -sin, 0],
+        #           [sin,  cos, 0],
+        #           [ 0,    0,  1]]
+        return ti.Matrix([[ c,  -s, 0.0],
+                          [ s,   c, 0.0],
+                          [0.0, 0.0,1.0]])
+
+    @ti.func
+    def _cp_wing(self, b, a, l):
+        aa = ti.abs(a)
+        cx = (-self.cg_to_chord[b] + aa / (ti.math.pi/2) * (self.cp_end[b] - self.cp_start[b]) + self.cp_start[b]) * self.chord[l]
+        return ti.Vector([cx, 0.0, 0.0])
+
+    @ti.func
+    def _cp_fus(self, b, a, l):
+        aa = ti.abs(a)
+        cx = self.cg_fus_local_x + (aa / (ti.math.pi/2) * (self.cp_end[b] - self.cp_start[b]) + self.cp_start[b]) * self.chord[l]
+        return ti.Vector([cx, 0.0, 0.0])
+
+    @ti.func
+    def _cp_rudder(self, b, beta, l):
+        aa = ti.abs(beta)
+        cx = (-self.cg_to_chord[b] + aa / (ti.math.pi/2) * (self.cp_end[b] - self.cp_start[b]) + self.cp_start[b]) * self.chord[l]
+        return ti.Vector([cx, 0.0, self.cz_rudder])
+
+    @ti.func
+    def _cp_elev(self, b, a, l):
+        aa = ti.abs(a)
+        cx =  (-self.cg_to_chord[b] + aa / (ti.math.pi/2) * (self.cp_end[b] - self.cp_start[b]) + self.cp_start[b]) * self.chord[l] 
+        cy = 0.25 * self.area[l] / self.chord[l] * ti.cast(self.side[l], ti.f16)
+        return ti.Vector([cx, cy, 0.02])
 
     @ti.kernel
     def _kernel_init_invweight(
@@ -1628,8 +2226,10 @@ class RigidSolver(Solver):
 
     def substep(self):
         from genesis.utils.tools import create_timer
-
         timer = create_timer("rigid", level=1, ti_sync=True, skip_first_call=True)
+        if self._aero_enabled: 
+            self._aero_step()
+        timer.stamp("kernel_aero_external_force")
         self._kernel_step_1()
         timer.stamp("kernel_step_1")
 
@@ -2715,6 +3315,85 @@ class RigidSolver(Solver):
             torque, links_idx, self.n_links, 3, envs_idx, idx_name="links_idx", skip_allocation=True, unsafe=unsafe
         )
         self._kernel_apply_links_external_torque(torque, links_idx, envs_idx)
+
+    def apply_external_force_link_frame(
+            self,
+            pos, 
+            force,  
+            links_idx=None,
+            envs_idx=None,
+            *, unsafe=False):
+
+        pos, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            pos, links_idx, self.n_links, 3,
+            envs_idx, idx_name="links_idx",
+            skip_allocation=True, unsafe=unsafe)
+
+        force, l_idx2, e_idx2 = self._sanitize_2D_io_variables(
+            force, links_idx, self.n_links, 3,
+            envs_idx, idx_name="links_idx",
+            skip_allocation=True, unsafe=unsafe)
+
+        if not unsafe and (not torch.equal(links_idx, l_idx2)
+                        or not torch.equal(envs_idx, e_idx2)):
+            gs.raise_exception("`pos` and `force` do not have same indexing.")
+
+        # ------------------------------------------------------------------------
+        self._kernel_apply_links_external_force_link_frame(
+            pos, force, links_idx, envs_idx)
+        
+    def apply_external_torque_link_frame(
+            self, torque, links_idx=None, envs_idx=None, *, unsafe=False):
+
+        torque, links_idx, envs_idx = self._sanitize_2D_io_variables(
+            torque, links_idx, self.n_links, 3,
+            envs_idx, idx_name="links_idx",
+            skip_allocation=True, unsafe=unsafe)
+
+        self._kernel_apply_links_external_torque_link_frame(
+            torque, links_idx, envs_idx)
+
+
+    @ti.kernel
+    def _kernel_apply_links_external_torque_link_frame(
+            self,
+            torque: ti.types.ndarray(),      # [B, L, 3]
+            links_idx: ti.types.ndarray(),   # [L]
+            envs_idx: ti.types.ndarray(),    # [B]
+    ):
+        for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+            t = ti.Vector([torque[i_b_, i_l_, 0],
+                        torque[i_b_, i_l_, 1],
+                        torque[i_b_, i_l_, 2]], dt=gs.ti_float)
+            self._func_apply_external_torque_link_frame(
+                t, links_idx[i_l_], envs_idx[i_b_])
+            
+    @ti.kernel
+    def _kernel_apply_links_external_force_link_frame(
+        self,
+        pos: ti.types.ndarray(),      # [B, L, 3]
+        force: ti.types.ndarray(),    # [B, L, 3]
+        links_idx: ti.types.ndarray(),   # [L]
+        envs_idx: ti.types.ndarray(),    # [B]
+    ):
+        ti.loop_config(serialize=self._para_level < gs.PARA_LEVEL.PARTIAL)
+
+        # doppio loop   (link, batch)  –  esattamente come negli altri kernel “setter”
+        for i_l_, i_b_ in ti.ndrange(links_idx.shape[0], envs_idx.shape[0]):
+            # costruiamo i vettori 3-D una sola volta per coppia (link, env)
+            p = ti.Vector([pos[i_b_, i_l_, 0],
+                        pos[i_b_, i_l_, 1],
+                        pos[i_b_, i_l_, 2]], dt=gs.ti_float)
+
+            f = ti.Vector([force[i_b_, i_l_, 0],
+                        force[i_b_, i_l_, 1],
+                        force[i_b_, i_l_, 2]], dt=gs.ti_float)
+
+            # identica firma alle altre _func_apply_*
+            self._func_apply_external_force_link_frame(
+                p, f, links_idx[i_l_], envs_idx[i_b_]
+            )
+
 
     @ti.kernel
     def _kernel_apply_links_external_torque(
