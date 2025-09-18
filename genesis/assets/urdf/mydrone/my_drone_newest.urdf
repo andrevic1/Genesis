@@ -1,0 +1,470 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="drone_ea">
+
+  
+  <material name="grey"><color rgba="0.7 0.7 0.7 1" /></material>
+  <material name="red"><color rgba="0.7 0 0 1" /></material>
+  <material name="black"><color rgba="0.2 0.2 0.2 1" /></material>
+
+  
+  <link name="root_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+
+  
+  <joint name="fixed_joint_base_fuselage" type="fixed">
+    <parent link="root_link" />
+    <child link="fuselage" />
+    <origin xyz="0 0 0" rpy="3.141592653589793 0 0" />
+  </joint>
+
+  <link name="fuselage">
+    <inertial>
+      <origin xyz="-0.275 0 -0.04" rpy="0 0 0" />
+      <mass value="0.5" />
+      <inertia ixx="2.9015955e-04" ixy="0" ixz="0" iyy="7.4080147e-03" iyz="0" izz="7.4511885e-03" />
+    </inertial>
+
+    <visual name="fuselage_visual_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="package://meshes/fuselage_only.stl" scale="0.00097 0.001 0.001" name="fuselage_visual_0_shape_0" />
+      </geometry>
+      <material name="grey" />
+    </visual>
+
+    
+    <collision name="fuselage_collision_0"><origin xyz="-0.3637137339341273 1.3039958826196884e-18 0.0024556534860724526" rpy="-1.5898372930676048 6.123233995736766e-17 -1.5707963267948968" /><geometry><box size="0.10000000000000005 0.10476803794561983 0.7273891147638257" name="fuselage_collision_0_box_0" /></geometry></collision></link>
+
+  <joint name="fixed_joint_aero_frame_fuselage" type="fixed">
+    <parent link="fuselage" />
+    <child link="aero_frame_fuselage" />
+    <origin xyz="-0.275 0 -0.03" rpy="0 3.141592653589793 0" />
+  </joint>
+
+  <link name="aero_frame_fuselage">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0" />
+      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0" />
+    </inertial>
+  </link>
+
+  
+<!-- ================================================================ -->
+<!-- ELEVATOR sdoppiato (collision box = metà span)                   -->
+<!-- ================================================================ -->
+
+<!-- giunto di beccheggio (invariato) -->
+<joint name="elevator_pitch_joint" type="revolute">
+  <parent link="fuselage"/>
+  <child  link="elevator_hinge"/>
+  <origin xyz="-0.75 0 0" rpy="0 0 0"/>
+  <axis xyz="0 1 0"/>
+  <limit lower="-0.261799" upper="0.261799" effort="1.0" velocity="3.665191429"/>
+  <dynamics damping="0.2" friction="0.05"/>
+</joint>
+
+<!-- nodo radice: solo visual -->
+<link name="elevator_hinge">
+  <inertial><origin xyz="0 0 0" rpy="0 0 0"/><mass value="0"/>
+            <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/></inertial>
+  <visual>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry><mesh filename="package://meshes/elevator.stl" scale="0.0007 0.0012 0.001"/></geometry>
+    <material name="grey"/>
+  </visual>
+</link>
+
+
+<joint name="fixed_joint_elevator_left" type="fixed">
+  <parent link="elevator_hinge"/><child link="elevator_left"/>
+  <origin xyz="0  0.09 0" rpy="0 0 0"/>          <!-- +0.09 m = COM -->
+</joint>
+
+<link name="elevator_left">
+  <inertial>
+    <origin xyz="-0.0434 0 0" rpy="0 0 0"/>
+    <mass value="0.025"/>
+    <inertia ixx="1.0416665e-04" ixy="0" ixz="0"
+             iyy="3.5416665e-04" iyz="0" izz="4.1666665e-04"/>
+  </inertial>
+  <collision>
+    <origin xyz="-0.0700043273 0 -0.0226291863"
+            rpy="1.5763749568 -1.5318707859 3.1359944429"/>
+    <geometry>
+      <!-- span dimezzato: 0.1800 m -->
+      <box size="0.0135567616 0.139941293 0.1800018297"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_elevator_left" type="fixed">
+  <parent link="elevator_left"/><child link="aero_frame_elevator_left"/>
+  <origin xyz="-0.0434 0 0" rpy="0 3.141592654 0"/>
+</joint>
+<link name="aero_frame_elevator_left">
+        <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0"/>
+        <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+        </inertial>
+</link>
+
+
+<joint name="fixed_joint_elevator_right" type="fixed">
+  <parent link="elevator_hinge"/><child link="elevator_right"/>
+  <origin xyz="0 -0.09 0" rpy="0 0 0"/>          <!-- –0.09 m = COM -->
+</joint>
+
+<link name="elevator_right">
+  <inertial>
+    <origin xyz="-0.0434 0 0" rpy="0 0 0"/>
+    <mass value="0.025"/>
+    <inertia ixx="1.0416665e-04" ixy="0" ixz="0"
+             iyy="3.5416665e-04" iyz="0" izz="4.1666665e-04"/>
+  </inertial>
+  <collision>
+    <origin xyz="-0.0700043273 0 -0.0226291863"
+            rpy="1.5763749568 -1.5318707859 3.1359944429"/>
+    <geometry>
+      <box size="0.0135567616 0.139941293 0.1800018297"/>
+    </geometry>
+  </collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_elevator_right" type="fixed">
+  <parent link="elevator_right"/><child link="aero_frame_elevator_right"/>
+  <origin xyz="-0.0434 0 0" rpy="0 3.141592654 0"/>
+</joint>
+<link name="aero_frame_elevator_right">
+        <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0"/>
+        <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+        </inertial>
+</link>
+
+
+  
+  <joint name="rudder_yaw_joint" type="revolute">
+    <parent link="elevator_hinge" />
+    <child link="rudder" />
+    <origin xyz="-0.0 0 0" rpy="0 0 0" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.523599" upper="0.523599" effort="1.0" velocity="3.665191429" />
+    <dynamics damping="0.2" friction="0.05" />
+  </joint>
+
+  <link name="rudder">
+    <inertial>
+      <origin xyz="-0.0372 0 -0.08" rpy="0 0 0" />
+      <mass value="0.02" />
+      <inertia ixx="5.283333e-05" ixy="0" ixz="0" iyy="7.083333e-05" iyz="0" izz="1.950000e-05" />
+    </inertial>
+    <visual name="rudder_visual_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="package://meshes/rudder.stl" scale="0.0008 0.001 0.001" name="rudder_visual_0_shape_0" /></geometry>
+      <material name="red" />
+    </visual>
+    <collision name="rudder_collision_0"><origin xyz="-0.06799945448794147 -0.0006858935606931133 -0.10499447081596952" rpy="0.10626955814138643 0.008780081131392076 1.5717328981686811" /><geometry><box size="0.01347209289684701 0.119323096637794 0.16357341166046455" name="rudder_collision_0_box_0" /></geometry></collision></link>
+
+  
+  <joint name="fixed_joint_aero_frame_rudder" type="fixed">
+    <parent link="rudder" />
+    <child link="aero_frame_rudder" />
+    <origin xyz="-0.0372 0 -0.08" rpy="0 3.141592653589793 0" />
+  </joint>
+
+  <link name="aero_frame_rudder">
+        <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0"/>
+        <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+        </inertial>
+  </link>
+
+<!-- ================================================================ -->
+<!-- WINGS – ciascuna divisa in “prop-wash” e “free-stream” + sweep    -->
+<!-- ================================================================ -->
+
+<joint name="fixed_joint_right_wing" type="fixed">
+<parent link="fuselage"/>
+<child  link="fuselage_right_0"/>
+<origin xyz="-0.275 0.05 -0.03" rpy="0 0 3.141592653589793"/>
+</joint>
+
+<link name="fuselage_right_0">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="5.651e-05" ixy="0" ixz="0"
+            iyy="5.651e-05" iyz="0" izz="5.651e-05"/>
+</inertial>
+</link>
+
+<joint name="joint_0_twist_right_wing" type="revolute">
+<parent link="fuselage_right_0"/>
+<child  link="fuselage_right_1"/>
+<origin xyz="0 0 0" rpy="0 0 0"/>
+<axis  xyz="0 1 0"/>
+<limit lower="-0.5235987756" upper="0.5235987756"
+        effort="1.5" velocity="3.665191429"/>
+<dynamics damping="0.2" friction="0.05"/>
+</joint>
+
+<link name="fuselage_right_1">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="5.651e-05" ixy="0" ixz="0"
+            iyy="5.651e-05" iyz="0" izz="5.651e-05"/>
+</inertial>
+</link>
+
+
+<joint name="joint_1_sweep_right_wing" type="revolute">
+<parent link="fuselage_right_1"/>
+<child  link="right_wing"/>
+<origin xyz="0 -0.05 0" rpy="0 0 0"/>
+<axis  xyz="0 0 1"/>
+<limit lower="-0.5235987756" upper="0.5235987756"
+        effort="1.5" velocity="3.665191429"/>
+<dynamics damping="0.2" friction="0.05"/>
+</joint>
+
+<!-- Radice (solo visual) -->
+<link name="right_wing">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0"/><inertia ixx="0" ixy="0" ixz="0"
+                            iyy="0" iyz="0" izz="0"/>
+</inertial>
+<visual name="right_wing_visual">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <geometry>
+    <mesh filename="package://meshes/wing0009.stl"
+            scale="0.2 0.7 0.2"/>
+    </geometry>
+    <material name="red"/>
+</visual>
+</link>
+
+<!-- ► Prop-wash panel (7,14 %) -->
+<joint name="fixed_joint_right_wing_prop" type="fixed">
+<parent link="right_wing"/><child link="right_wing_prop"/>
+<origin xyz="0 -0.025 0" rpy="0 0 0"/>
+</joint>
+
+<link name="right_wing_prop">
+<inertial>
+    <origin xyz="0.034436664 0 0" rpy="0 0 0"/>
+    <mass value="0.004233"/>
+    <inertia ixx="2.2582371e-04" ixy="0" ixz="0"
+            iyy="9.375186e-06" iyz="0" izz="2.3504357e-04"/>
+</inertial>
+<collision name="right_wing_prop_collision">
+    <origin xyz="0.049996122 0 -0.000421042"
+            rpy="1.570796327 -1.558922022 0"/>
+    <geometry><box size="0.017962225 0.199988144 0.05"/></geometry>
+</collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_right_wing_prop" type="fixed">
+<parent link="right_wing_prop"/><child link="aero_frame_right_wing_prop"/>
+<origin xyz="0 0 0" rpy="3.141592654 0 0"/>
+</joint>
+<link name="aero_frame_right_wing_prop">
+<inertial>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <mass value="0"/>
+  <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+</inertial>
+</link>
+
+<!-- ► Free-stream panel (92,86 %) -->
+<joint name="fixed_joint_right_wing_free" type="fixed">
+<parent link="right_wing"/><child link="right_wing_free"/>
+<origin xyz="0 -0.375 0" rpy="0 0 0"/>
+</joint>
+
+<link name="right_wing_free">
+<inertial>
+    <origin xyz="0.034436664 0 0" rpy="0 0 0"/>
+    <mass value="0.055025"/>
+    <inertia ixx="2.9357083e-03" ixy="0" ixz="0"
+            iyy="1.2187741e-04" iyz="0" izz="3.0555664e-03"/>
+</inertial>
+<collision name="right_wing_free_collision">
+    <origin xyz="0.049996122 0 -0.000421042"
+            rpy="1.570796327 -1.558922022 0"/>
+    <geometry><box size="0.017962225 0.199988144 0.65"/></geometry>
+</collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_right_wing_free" type="fixed">
+<parent link="right_wing_free"/><child link="aero_frame_right_wing_free"/>
+<origin xyz="0 0 0" rpy="3.141592654 0 0"/>
+</joint>
+<link name="aero_frame_right_wing_free">
+<inertial>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <mass value="0"/>
+  <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+</inertial>
+</link>
+
+
+<joint name="fixed_joint_left_wing" type="fixed">
+<parent link="fuselage"/>
+<child  link="fuselage_left_0"/>
+<origin xyz="-0.275 -0.05 -0.03" rpy="0 0 3.141592653589793"/>
+</joint>
+
+<link name="fuselage_left_0">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="5.651e-05" ixy="0" ixz="0"
+            iyy="5.651e-05" iyz="0" izz="5.651e-05"/>
+</inertial>
+</link>
+
+<joint name="joint_0_twist_left_wing" type="revolute">
+<parent link="fuselage_left_0"/>
+<child  link="fuselage_left_1"/>
+<origin xyz="0 0 0" rpy="0 0 0"/>
+<axis  xyz="0 1 0"/>
+<limit lower="-0.5235987756" upper="0.5235987756"
+        effort="1.5" velocity="3.665191429"/>
+<dynamics damping="0.2" friction="0.05"/>
+</joint>
+
+<link name="fuselage_left_1">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0.1"/>
+    <inertia ixx="5.651e-05" ixy="0" ixz="0"
+            iyy="5.651e-05" iyz="0" izz="5.651e-05"/>
+</inertial>
+</link>
+
+
+<joint name="joint_1_sweep_left_wing" type="revolute">
+<parent link="fuselage_left_1"/>
+<child  link="left_wing"/>
+<origin xyz="0 0.05 0" rpy="0 0 0"/>
+<axis  xyz="0 0 1"/>
+<limit lower="-0.5235987756" upper="0.5235987756"
+        effort="1.5" velocity="3.665191429"/>
+<dynamics damping="0.2" friction="0.05"/>
+</joint>
+
+<!-- Radice (solo visual) -->
+<link name="left_wing">
+<inertial><origin xyz="0 0 0" rpy="0 0 0"/>
+    <mass value="0"/><inertia ixx="0" ixy="0" ixz="0"
+                            iyy="0" iyz="0" izz="0"/>
+</inertial>
+<visual name="left_wing_visual">
+    <origin xyz="0 0 0" rpy="3.141592654 0 0"/>
+    <geometry>
+    <mesh filename="package://meshes/wing0009.stl"
+            scale="0.2 0.7 0.2"/>
+    </geometry>
+    <material name="red"/>
+</visual>
+</link>
+
+<!-- ► Prop-wash panel -->
+<joint name="fixed_joint_left_wing_prop" type="fixed">
+<parent link="left_wing"/><child link="left_wing_prop"/>
+<origin xyz="0 0.025 0" rpy="0 0 0"/>
+</joint>
+
+<link name="left_wing_prop">
+<inertial>
+    <origin xyz="0.034436664 0 0" rpy="0 0 0"/>
+    <mass value="0.004233"/>
+    <inertia ixx="2.2582371e-04" ixy="0" ixz="0"
+            iyy="9.375186e-06" iyz="0" izz="2.3504357e-04"/>
+</inertial>
+<collision name="left_wing_prop_collision">
+    <origin xyz="0.049996122 0 -0.000421042"
+            rpy="1.570796327 -1.558922022 0"/>
+    <geometry><box size="0.017962225 0.199988144 0.05"/></geometry>
+</collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_left_wing_prop" type="fixed">
+<parent link="left_wing_prop"/><child link="aero_frame_left_wing_prop"/>
+<origin xyz="0 0 0" rpy="3.141592654 0 0"/>
+</joint>
+<link name="aero_frame_left_wing_prop">
+<inertial>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <mass value="0"/>
+  <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+</inertial>
+</link>
+
+<!-- ► Free-stream panel -->
+<joint name="fixed_joint_left_wing_free" type="fixed">
+<parent link="left_wing"/><child link="left_wing_free"/>
+<origin xyz="0 0.375 0" rpy="0 0 0"/>
+</joint>
+
+<link name="left_wing_free">
+<inertial>
+    <origin xyz="0.034436664 0 0" rpy="0 0 0"/>
+    <mass value="0.055025"/>
+    <inertia ixx="2.9357083e-03" ixy="0" ixz="0"
+            iyy="1.2187741e-04" iyz="0" izz="3.0555664e-03"/>
+</inertial>
+<collision name="left_wing_free_collision">
+    <origin xyz="0.049996122 0 -0.000421042"
+            rpy="1.570796327 -1.558922022 0"/>
+    <geometry><box size="0.017962225 0.199988144 0.65"/></geometry>
+</collision>
+</link>
+
+<joint name="fixed_joint_aero_frame_left_wing_free" type="fixed">
+<parent link="left_wing_free"/><child link="aero_frame_left_wing_free"/>
+<origin xyz="0 0 0" rpy="3.141592654 0 0"/>
+</joint>
+<link name="aero_frame_left_wing_free">
+<inertial>
+  <origin xyz="0 0 0" rpy="0 0 0"/>
+  <mass value="0"/>
+  <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>
+</inertial>
+</link>
+
+    
+  
+  <joint name="fixed_joint_prop_frame_fuselage_0" type="fixed">
+    <parent link="fuselage" />
+    <child link="prop_frame_fuselage_0" />
+    <origin xyz="0 0 0" rpy="3.141592653589793 -1.5707963267948966 0" />
+  </joint>
+
+  <link name="prop_frame_fuselage_0">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <mass value="0.031" />
+      
+      <inertia ixx="3.7625e-05" ixy="0" ixz="0" iyy="3.7625e-05" iyz="0" izz="7.5000e-05" />
+    </inertial>
+    <visual name="prop_frame_fuselage_0_visual_0">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><cylinder radius="0.1" length="0.005" name="prop_frame_fuselage_0_visual_0_shape_0" /></geometry>
+      <material name="black" />
+    </visual>
+    <collision name="prop_frame_collision">
+    <origin xyz="0 0 0"
+            rpy="0 0 0"/>
+    <geometry><box size="0.2 0.2 0.02"/></geometry>
+    </collision>
+    
+  </link>
+
+</robot>
