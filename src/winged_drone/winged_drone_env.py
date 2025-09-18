@@ -280,7 +280,7 @@ class WingedDroneEnv:
             self.BASE_OBS_SIZE     +
             1      +      # commands
             self.num_actions       +      # last actions
-            self.num_servos        +      # joint pos
+            #self.num_servos        +      # joint pos
             self._n_act            )      # depth centrali
 
         ang_full = torch.linspace(
@@ -434,9 +434,9 @@ class WingedDroneEnv:
         if self.growing_forest:
             dens_min = self.env_cfg.get("dens_min", 0.0)  # densità minima
             if self.evaluation:
-                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 5.0)  # densità massima
             else:
-                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 5.0)  # densità massima
             width_x   = x_upper - x_lower
             expected_N = 0.5 * (dens_min + dens_max) * width_x
             num_trees  = int(math.ceil(expected_N))
@@ -454,7 +454,7 @@ class WingedDroneEnv:
             cylinders[..., 0] = xs
             cylinders[..., 1] = ys
             cylinders[..., 2].fill_(tree_height * 0.5)
-            if self.evaluation and not self.unique_forests_eval:
+            if self.evaluation and self.num_envs == 1 and not self.unique_forests_eval:
                 for i in range(num_trees):
                     self.scene.add_entity(
                         gs.morphs.Cylinder(
@@ -466,7 +466,7 @@ class WingedDroneEnv:
                         )
                     )
             self.cylinders_array = cylinders
-            return  # finito: la versione “growing” non richiede altro
+            return
 
         # ========================================================================
         # ======================= FORESTE UNIFORMI (caso training) ===============
@@ -515,12 +515,12 @@ class WingedDroneEnv:
         z_tgt  = 10
 
         self.commands[envs_idx, 1] = z_tgt           # target height
-        v_tgt = gs_rand_float(5, 25,
+        v_tgt = gs_rand_float(6, 24,
                             (len(envs_idx),), self.device)
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 12.0
+            self.commands[envs_idx, 2] = 22.0
         return
     
     def set_angle_limit(self, limit_deg: float):
@@ -702,8 +702,8 @@ class WingedDroneEnv:
                  self.base_lin_vel[:, 0].unsqueeze(1)/20,
                  self.base_lin_vel[:, 1].unsqueeze(1)/10,
                  self.base_lin_vel[:, 2].unsqueeze(1)/10,
-                 self.joint_position/self.joint_limits[1],
-                1 - depth_actor / self.MAX_DISTANCE,
+                 #self.joint_position/self.joint_limits[1],
+                 1 - depth_actor / self.MAX_DISTANCE,
                  self.last_actions[:, 0].unsqueeze(1),
                  self.last_actions[:, 1:] / self.joint_limits[1],
                  self.commands[:, 2].unsqueeze(1)/20,
@@ -719,12 +719,12 @@ class WingedDroneEnv:
             # tensor: 1D tensor o lista di float
             return [f"{x:.3f}" for x in tensor.tolist()]
         
-        if self.evaluation and self.num_envs == 1:
-            print("Time step:        ", fmt(self.episode_length_buf*self.dt))
+        if self.evaluation:
+            #print("Time step:        ", fmt(self.episode_length_buf*self.dt))
             print("Position:         ", fmt(self.base_pos[0]))
             print("Velocity:         ", fmt(self.base_lin_vel[0]))
-            print("Alpha:            ", fmt(self.alpha))
-            print("Beta:             ", fmt(self.beta))
+            #print("Alpha:            ", fmt(self.alpha))
+            #print("Beta:             ", fmt(self.beta))
             #print("Euler:            ", fmt(self.base_euler[0]))
             print("Depth:            ", fmt(self.depth[0]))
             print("Actions:          ", fmt(self.actions[0]))
@@ -1166,8 +1166,10 @@ class WingedDroneEnv:
                                                     dtype=torch.float32)
         self.base_lin_vel[envs_idx] = torch.tensor([12.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
         self.base_ang_vel[envs_idx] = torch.tensor([0.0, 0.0, 0.0], device=self.device, dtype=torch.float32)
-        self.base_lin_vel[envs_idx, 0] = self.commands[envs_idx, 2]
-        #self.base_lin_vel[envs_idx, 0] = 12
+        if self.evaluation:
+            self.base_lin_vel[envs_idx, 0] = 10
+        else:
+            self.base_lin_vel[envs_idx, 0] = self.commands[envs_idx, 2]
         '''
         if not self.evaluation:
             noise = gs_rand_normal(0.0, 10.0, (num_resets,), self.device)
@@ -1274,7 +1276,7 @@ class WingedDroneEnv:
         reward = torch.exp(-0.5 * ((x - 1.0) / sigma) ** 2)                      # (E,)
         return progress/20                    # (E,)
     '''
-    def _reward_progress(self, sigma: float = 0.2):
+    def _reward_progress(self, sigma: float = 0.15):
         """
         Reward gaussiano centrato su v_tgt.
         sigma controlla la larghezza della campana (unità: frazione di v_tgt).

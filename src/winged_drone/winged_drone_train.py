@@ -56,8 +56,8 @@ def get_train_cfg(exp_name, max_iterations):
         "policy": {
             "class_name": "ActorCriticTanh", # "ActorCriticRecurrent", "ActorCritic"
             "activation": "elu",
-            "actor_hidden_dims": [64, 64, 64], # [256, 256, 256]
-            "critic_hidden_dims": [64, 64, 64], # [256, 256, 256]
+            "actor_hidden_dims": [64, 64], # [256, 256, 256]
+            "critic_hidden_dims": [64, 64], # [256, 256, 256]
             "init_noise_std": 0.65, # 1.0
             "rnn_type": "lstm",
             "rnn_hidden_size": 64, # 256

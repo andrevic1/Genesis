@@ -1483,8 +1483,8 @@ if __name__ == "__main__":
     p.add_argument("-e","--exp_name", default="drone-forest")
     p.add_argument("--ckpt",  type=int, default=300)
     p.add_argument("--envs",  type=int, default=4096)
-    p.add_argument("--vmin",  type=float, default=5.0)
-    p.add_argument("--vmax",  type=float, default=22.0)
+    p.add_argument("--vmin",  type=float, default=6.0)
+    p.add_argument("--vmax",  type=float, default=24.0)
     p.add_argument("--gpu",   default="cuda")
     args = p.parse_args()
 
@@ -1506,6 +1506,7 @@ if __name__ == "__main__":
         episode_length_s= SUCCESS_TIME,
         x_upper=500,
         tree_radius=0.75,
+        base_init_pos=[-100.0, 0.0, 10.0],
     ))
 
     env = WingedDroneEvalLinSpeed(
@@ -1517,7 +1518,7 @@ if __name__ == "__main__":
         show_viewer=False, eval=True
     )
 
-    noise_sigma = 0.1
+    noise_sigma = 0.0
     env.rigid_solver.noise_sigma_mag = noise_sigma
     env.rigid_solver.noise_sigma_dir = noise_sigma
 
@@ -1658,7 +1659,7 @@ if __name__ == "__main__":
     total_plot(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=250.0,                 # oppure ometti e usa percentage=0.10
+        minimal_p=350.0,                 # oppure ometti e usa percentage=0.10
         #percentage=0.10,
         #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot.png"
@@ -1667,7 +1668,7 @@ if __name__ == "__main__":
     total_plot_efficiency(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=250.0,                 # come nel total_plot per coerenza
+        minimal_p=350.0,                 # come nel total_plot per coerenza
         #percentage=0.10,                # oppure usa la percentuale
         #custom_point=(14.9, 640.0, 6.5), # stesso punto: qui l’eff verrà mostrata come 1/6.5 m/J
         out=f"{args.exp_name}_{args.ckpt}_total_plot_efficiency.png"
@@ -1676,7 +1677,7 @@ if __name__ == "__main__":
     total_plot_progress_only_point(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=250.0,                     # o lascia None e usa percentage
+        minimal_p=350.0,                     # o lascia None e usa percentage
         # percentage=0.10,
         #custom_point=(14.9, 640.0, 6.5),     # stesso formato di total_plot
         out=f"{args.exp_name}_{args.ckpt}_total_plot_progress_only_point.png"
@@ -1685,7 +1686,7 @@ if __name__ == "__main__":
     total_plot_points_instead_of_ma(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=250.0,                     # o percentage=0.10
+        minimal_p=350.0,                     # o percentage=0.10
         #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png"
     )
