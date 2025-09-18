@@ -20,6 +20,7 @@ from rsl_rl.runners import OnPolicyRunner
 from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
+from tensorboard.backend.event_processing import event_accumulator
 
 SUCCESS_TIME = 200.0  # tempo minimo per considerare un env come "successo"
 # ──────────────────────────────────────────────────────────────
@@ -187,16 +188,16 @@ def run_eval(env, policy, watch_env_idxs=()):
 
     return v_mean, v_last10_mean, E_tot, v_cmd, progress, t_acc, final_reason, traces, traces_all
 
-def _moving_avg(x, y, win_frac=0.03):
+def _moving_avg(x, y, win_frac=0.03, drop_edges=True):
     """
-    Restituisce (x, y_smooth, y_std) a lunghezza intera.
-    La finestra è pari a win_frac*len(x) (almeno 11, obblig. dispari).
-    Agli estremi la finestra viene troncata senza eliminare i punti.
+    Restituisce (x, y_smooth, y_std).
+    Se drop_edges=True elimina i punti ai bordi dove la finestra verrebbe troncata,
+    quindi usa solo finestre piene (centrate e di ampiezza 'win').
     """
     order = np.argsort(x)
     x_ord, y_ord = x[order], y[order]
 
-    win = max(11, int(len(x_ord)*win_frac)) | 1      # forziamo dispari
+    win  = max(11, int(len(x_ord)*win_frac)) | 1
     half = win // 2
 
     y_smooth = np.empty_like(y_ord, dtype=float)
@@ -209,7 +210,14 @@ def _moving_avg(x, y, win_frac=0.03):
         y_smooth[i] = seg.mean()
         y_std[i]    = seg.std(ddof=0)
 
-    return x_ord, y_smooth, y_std
+    if drop_edges:
+        # tieni solo gli indici con finestra piena
+        sl = slice(half, len(x_ord)-half)
+        return x_ord[sl], y_smooth[sl], y_std[sl]
+    else:
+        # versione "piena lunghezza" con troncamento ai bordi
+        return x_ord, y_smooth, y_std
+
 
 # ──────────────────────────────────────────────────────────────
 # Helpers: formattazione e annotazioni per le triple di picco
@@ -528,7 +536,7 @@ def scatter_speed_agility(v_mean, E_tot, v_cmd, progress, percentage=0.2, out="s
     plt.xlabel("Mean Velocity x̄ [m/s]")
     plt.ylabel("Progress [m]")
     plt.xlim(5, 25)
-    plt.ylim(0, 1100)
+    plt.ylim(0, 600)
 
     # soglia -20% del max progress (facoltativa, mantiene la tua visual)
     if peaks and "prog" in peaks and percentage is not None:
@@ -668,10 +676,65 @@ def evaluation(exp_name, urdf_file, ckpt, envs, vmin, vmax, win_frac=0.03, retur
     runner = OnPolicyRunner(env, runner_cfg, log_dir, device=gs.device)
     runner.load(os.path.join(log_dir, f"model_{ckpt-1}.pt"))
     policy = runner.get_inference_policy(device=gs.device)
-
     v_mean, v_mean_last_10s, E_tot, v_cmd, progress, t_acc, final_reason, _, _ = run_eval(env, policy)
-
     gs.destroy()
+
+    # **New: Parse training TensorBoard logs to compute final episodic reward metrics**
+    final_reward = 0.0
+    steps90_pct = 0.0
+    # Initialize TensorBoard event accumulator for the training log directory
+    ea = event_accumulator.EventAccumulator(log_dir)
+    ea.Reload()
+    scalar_tags = ea.Tags().get("scalars", [])
+    # Identify all logged episodic reward tags (those starting with 'rew_')
+    reward_tags = [tag for tag in scalar_tags if tag.startswith("rew_")]
+    if reward_tags:
+        import math
+        total_steps = ckpt  # total training iterations
+        # Determine the window of final 5% of steps
+        final_window = max(1, math.ceil(0.05 * total_steps))
+        # Determine the last training step index (TensorBoard uses 0-indexed steps)
+        max_step = max(e.step for e in ea.Scalars(reward_tags[0]))
+        # Calculate the starting step for the final 5% window
+        start_step = max_step - final_window + 1
+        # Collect average total reward for each step in the final window
+        total_rewards = []
+        for step in range(start_step, max_step + 1):
+            # Sum all reward components for this step (if any episodes ended)
+            values = [e.value for tag in reward_tags for e in ea.Scalars(tag) if e.step == step]
+            if values:
+                total_rewards.append(sum(values))
+        if total_rewards:
+            final_reward = sum(total_rewards) / len(total_rewards)
+        # Prepare a series of total reward per step for the entire training
+        steps_count = max_step + 1
+        reward_series = [0.0] * steps_count
+        for tag in reward_tags:
+            for event in ea.Scalars(tag):
+                reward_series[event.step] += event.value
+        # Compute a moving-average of the episodic reward (window = 3% of steps)
+        window = max(1, math.ceil(0.03 * total_steps))
+        smooth = [0.0] * steps_count
+        cum_sum = 0.0
+        for i in range(steps_count):
+            cum_sum += reward_series[i]
+            if i < window:
+                # For the first 'window' steps, average from start to current step
+                smooth[i] = cum_sum / (i + 1)
+            else:
+                # Moving average of the last 'window' steps ending at i
+                cum_sum -= reward_series[i - window]
+                smooth[i] = cum_sum / window
+        # Find the first step where smoothed reward reaches 90% of final_reward
+        threshold = 0.9 * final_reward
+        steps_to_90 = 0
+        for i, val in enumerate(smooth):
+            if val >= threshold:
+                steps_to_90 = i + 1  # convert index to 1-based step count
+                break
+        # Express this as a percentage of total training steps
+        if total_steps > 0:
+            steps90_pct = (steps_to_90 / float(total_steps)) * 100.0
 
     v_cmd_m, v_mean_m = v_cmd, v_mean
     E_tot_m, prog_m   = E_tot, progress
@@ -707,12 +770,15 @@ def evaluation(exp_name, urdf_file, ckpt, envs, vmin, vmax, win_frac=0.03, retur
         "mean_E":      Energy[idx_p],
         "mean_progress": prog[idx_p],
     }
+
+    extra = {"max_p": max_p, "final_reward": final_reward, "steps90_pct": steps90_pct}
     if return_arrays:
-        extra = dict(p_s=p_s, v_s=v_s, E_s=E_s,
-                     v_cmd=v_cmd_m, v_mean=v_mean_m, E_tot=E_tot_m,
-                     max_p=max_p)
-        return top_vel, top_eff, top_prog, final_reason, extra
-    return top_vel, top_eff, top_prog, final_reason, max_p
+        extra.update({"p_s": p_s, "v_s": v_cmd_m, "E_s": E_tot_m})
+    # Return results (include extra dict when return_arrays is True)
+    if return_arrays:
+        return top_vel, top_eff, top_prog, _, extra
+    else:
+        return top_vel, top_eff, top_prog, _, max_p
 
 
 def plot_forest(env):
@@ -860,7 +926,7 @@ def total_plot_points_instead_of_ma(
                     edgecolors="none", label="progress only -- Operational Point",
                     zorder=12)
         
-    ax1.set_ylim(0, 1000)
+    ax1.set_ylim(0, 600)
     ax1.set_ylabel("Progress [m]")
     ax1.grid(alpha=0.25)
 
@@ -879,7 +945,7 @@ def total_plot_points_instead_of_ma(
         ax2.scatter([v_c], [eff_c], s=op_marker_size, c=["tab:red"],
                     edgecolors="none", zorder=12)
 
-    ax2.set_ylim(3, 9)
+    ax2.set_ylim(5, 16)
     ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
     ax2.set_ylabel("Cost of Transport [J/m]")
     ax2.grid(alpha=0.25)
@@ -960,7 +1026,7 @@ def total_plot_progress_only_point(
         ax1.axhline(minimal_p, ls="--", lw=1.4, color="tab:gray",
                     label="minimal progress threshold", zorder=Z_LINE)
 
-    ax1.set_ylim(0, 1000)
+    ax1.set_ylim(0, 600)
     ax1.set_ylabel("Progress [m]")
     ax1.grid(alpha=0.25)
     ax1.legend(fontsize=9, loc="best")
@@ -976,7 +1042,7 @@ def total_plot_progress_only_point(
         # stellina sull'asse X in basso, stessa estetica del total_plot
         ax2.plot([v_c], [3.0], marker="*", ms=11, color="tab:red", zorder=Z_MARK, clip_on=False)
 
-    ax2.set_ylim(3, 9)
+    ax2.set_ylim(5, 16)
     ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
     ax2.set_ylabel("Cost of Transport [J/m]")
     ax2.grid(alpha=0.25)
@@ -1158,7 +1224,7 @@ def total_plot(
 
     # assi Y da 0
     y1min, y1max = ax1.get_ylim()
-    ax1.set_ylim(0, 1000)
+    ax1.set_ylim(0, 600)
     ax1.set_ylabel("Progress [m]")
     ax1.grid(alpha=0.25)
     # aggiungi rettangolino grigio alla legenda per indicare la regione
@@ -1206,7 +1272,7 @@ def total_plot(
                  zorder=Z_MARK, clip_on=False)
 
     # assi Y: energia 0..9 fisso
-    ax2.set_ylim(3, 9)
+    ax2.set_ylim(5, 16)
 
     ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
     ax2.set_ylabel("Cost of Transport [J/m]")
@@ -1352,7 +1418,7 @@ def total_plot_efficiency(
         ax1.plot([xmin], [p_c], marker="*", ms=11, color="tab:green", zorder=Z_MARK, clip_on=False)
         ax1.axvline(v_c, ls="--", lw=1.4, color="tab:green", zorder=Z_LINE)
 
-    ax1.set_ylim(0, 1000)
+    ax1.set_ylim(0, 600)
     ax1.set_ylabel("Progress — moving avg [m]")
     ax1.grid(alpha=0.25)
     # aggiungi rettangolino grigio alla legenda SOLO nel primo subplot
@@ -1416,9 +1482,9 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("-e","--exp_name", default="drone-forest")
     p.add_argument("--ckpt",  type=int, default=300)
-    p.add_argument("--envs",  type=int, default=8192)
+    p.add_argument("--envs",  type=int, default=4096)
     p.add_argument("--vmin",  type=float, default=5.0)
-    p.add_argument("--vmax",  type=float, default=24.0)
+    p.add_argument("--vmax",  type=float, default=22.0)
     p.add_argument("--gpu",   default="cuda")
     args = p.parse_args()
 
@@ -1438,7 +1504,7 @@ if __name__ == "__main__":
         unique_forests_eval=True,
         growing_forest=True,
         episode_length_s= SUCCESS_TIME,
-        x_upper=1000,
+        x_upper=500,
         tree_radius=0.75,
     ))
 
@@ -1450,6 +1516,10 @@ if __name__ == "__main__":
         command_cfg=cmd_cfg,
         show_viewer=False, eval=True
     )
+
+    noise_sigma = 0.1
+    env.rigid_solver.noise_sigma_mag = noise_sigma
+    env.rigid_solver.noise_sigma_dir = noise_sigma
 
     plot_forest(env)
 
@@ -1489,7 +1559,7 @@ if __name__ == "__main__":
     E_tot_m, prog_m   = E_tot, progress
 
     # curve smussate
-    win_frac = 0.03
+    win_frac = 0.02
 
     xm_s, p_s,  _  = _moving_avg(v_mean_m, prog_m, win_frac)
     idx_p = np.argmax(p_s)        # progress max
@@ -1581,41 +1651,41 @@ if __name__ == "__main__":
 
     plot_3d_speed_energy_progress_ma(
         v_mean, E_tot, progress, v_cmd,
-        win_frac=0.03,                                 # o ciò che preferisci
+        win_frac=win_frac,                                 # o ciò che preferisci
         html_out=f"{args.exp_name}_{args.ckpt}_3D_speed_energy_progress_MA.html"
     )
 
     total_plot(
         v_mean, E_tot, v_cmd, progress,
-        win_frac=0.03,
-        minimal_p=500.0,                 # oppure ometti e usa percentage=0.10
+        win_frac=win_frac,
+        minimal_p=250.0,                 # oppure ometti e usa percentage=0.10
         #percentage=0.10,
-        custom_point=(14.9, 640.0, 6.5),
+        #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot.png"
     )
 
     total_plot_efficiency(
         v_mean, E_tot, v_cmd, progress,
-        win_frac=0.03,
-        minimal_p=500.0,                 # come nel total_plot per coerenza
+        win_frac=win_frac,
+        minimal_p=250.0,                 # come nel total_plot per coerenza
         #percentage=0.10,                # oppure usa la percentuale
-        custom_point=(14.9, 640.0, 6.5), # stesso punto: qui l’eff verrà mostrata come 1/6.5 m/J
+        #custom_point=(14.9, 640.0, 6.5), # stesso punto: qui l’eff verrà mostrata come 1/6.5 m/J
         out=f"{args.exp_name}_{args.ckpt}_total_plot_efficiency.png"
     )
 
     total_plot_progress_only_point(
         v_mean, E_tot, v_cmd, progress,
-        win_frac=0.03,
-        minimal_p=500.0,                     # o lascia None e usa percentage
+        win_frac=win_frac,
+        minimal_p=250.0,                     # o lascia None e usa percentage
         # percentage=0.10,
-        custom_point=(14.9, 640.0, 6.5),     # stesso formato di total_plot
+        #custom_point=(14.9, 640.0, 6.5),     # stesso formato di total_plot
         out=f"{args.exp_name}_{args.ckpt}_total_plot_progress_only_point.png"
     )
 
     total_plot_points_instead_of_ma(
         v_mean, E_tot, v_cmd, progress,
-        win_frac=0.03,
-        minimal_p=500.0,                     # o percentage=0.10
-        custom_point=(14.9, 640.0, 6.5),
+        win_frac=win_frac,
+        minimal_p=250.0,                     # o percentage=0.10
+        #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png"
     )

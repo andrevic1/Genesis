@@ -595,6 +595,65 @@ def plot_three_2d_pareto_stacked(df: pd.DataFrame,
     plt.close(fig)
     print(f"[plot_three_2d_pareto_stacked] Plot saved → {out_path}")
 
+def plot_objectives_over_generations(df: pd.DataFrame, out_dir: str) -> None:
+    """
+    Plot Fig. 4c-style time courses: for each objective (ff_0 velocity, ff_1 -energy,
+    ff_2 progress), show per-generation mean ± std across the population.
+
+    The plot has 3 subplots (one per objective). Missing columns or empty
+    data are handled gracefully with warnings and early returns.
+    """
+    required_cols = ["generation", "ff_0", "ff_1", "ff_2"]
+    if not set(required_cols).issubset(df.columns):
+        print("Warning: some of ['generation','ff_0','ff_1','ff_2'] not found – skipping Fig4c timecourses")
+        return
+
+    # Clean sentinels per objective
+    # ff_0 (velocity): 0.0 invalid; ff_1 (-energy): -100.0 invalid; ff_2 (progress): 0.0 invalid
+    df_clean = df.copy()
+    df_clean.loc[df_clean["ff_0"].isin({0.0}), "ff_0"] = np.nan
+    df_clean.loc[df_clean["ff_1"].isin({-100.0}), "ff_1"] = np.nan
+    df_clean.loc[df_clean["ff_2"].isin({0.0}), "ff_2"] = np.nan
+
+    # Group by generation and compute mean/std
+    def _agg(col):
+        g = df_clean.groupby("generation")[col]
+        return g.mean(), g.std(ddof=0)
+
+    try:
+        m0, s0 = _agg("ff_0")  # velocity
+        m1, s1 = _agg("ff_1")  # -energy (efficiency, higher is better)
+        m2, s2 = _agg("ff_2")  # progress
+    except Exception as e:
+        print(f"Warning: aggregation failed in Fig4c timecourses – {e}")
+        return
+
+    if m0.empty or m1.empty or m2.empty:
+        print("Warning: no data per generation for one or more objectives – skipping Fig4c timecourses")
+        return
+
+    gens = m0.index.values.astype(float)  # assume aligned indices after groupby
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4), sharex=True)
+
+    def _one(ax, x, mean, std, title, ylab):
+        ax.plot(x, mean, lw=2)
+        ax.fill_between(x, mean - std, mean + std, alpha=0.25)
+        ax.set_title(title)
+        ax.set_xlabel("Generation")
+        ax.set_ylabel(ylab)
+        ax.grid(True, alpha=0.4, ls=":")
+
+    _one(axes[0], gens, m0.values, s0.values, "Velocity objective (ff₀)", "Mean ± std")
+    _one(axes[1], gens, m1.values, s1.values, "Efficiency objective (ff₁ = −energy)", "Mean ± std")
+    _one(axes[2], gens, m2.values, s2.values, "Progress objective (ff₂)", "Mean ± std")
+
+    fig.suptitle("Objectives over generations (mean ± std) – Fig. 4c style", fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    out_path = os.path.join(out_dir, "fig4c_objectives_over_generations.png")
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"✓ Fig.4c timecourses saved → {out_path}")
 
 
 # ---------------------- Main analysis ----------------------
@@ -805,6 +864,59 @@ def main(csv_path, out_dir, n_obj=None, ff_sentinel=0):
     for g in generations:
         group_g = df[df['generation'] == g]
         triple_subplots_generation(group_g, g, out_dir)
+
+    if 'final_reward' in df.columns and 'steps90_pct' in df.columns:
+        # Determine the best individual (highest final_reward) per generation
+        idx = df.groupby('generation')['final_reward'].idxmax()
+        gens = df.loc[idx, 'generation'].to_numpy(dtype=float)
+        final_vals = df.loc[idx, 'final_reward'].to_numpy(dtype=float)
+        steps_vals = df.loc[idx, 'steps90_pct'].to_numpy(dtype=float)
+        # Sort by generation for proper order
+        order = np.argsort(gens)
+        gens, final_vals, steps_vals = gens[order], final_vals[order], steps_vals[order]
+        # Plot final episodic reward per generation
+        fig, ax1 = plt.subplots()
+        ax1.plot(gens, final_vals, color='tab:blue')
+        ax1.set_xlabel("Generation"); 
+        ax1.set_ylabel("Final Reward (avg last 5%)", color='tab:blue')
+        ax1.grid(True, alpha=0.4, ls=':')
+        save_plot(fig, 'final_reward_per_generation')
+        print("✓ final reward per generation plot →", os.path.join(out_dir, "final_reward_per_generation.png"))
+        # Plot learning speed (steps to 90% reward) per generation
+        fig, ax2 = plt.subplots()
+        ax2.plot(gens, steps_vals, color='tab:red')
+        ax2.set_xlabel("Generation"); 
+        ax2.set_ylabel("Steps to 90% Final Reward [%]", color='tab:red')
+        ax2.grid(True, alpha=0.4, ls=':')
+        save_plot(fig, 'learning_speed_per_generation')
+        print("✓ learning speed per generation plot →", os.path.join(out_dir, "learning_speed_per_generation.png"))
+    else:
+        print("Warning: final_reward or steps90_pct not found in data – skipping generation reward plots")
+
+    # --- New: Final Reward vs Morphological Parameter (e.g., Wing Span) ---
+    if 'chromosome_parsed' in df.columns and df['chromosome_parsed'].notna().any():
+        # Use final generation individuals for morphology-performance analysis
+        last_gen = df['generation'].max()
+        final_gen_df = df[df['generation'] == last_gen]
+        if 'final_reward' in final_gen_df.columns:
+            # Extract wing span (gene 0) from the parsed genome
+            wing_spans = final_gen_df['chromosome_parsed'].apply(
+                lambda chromo: chromo[0] if isinstance(chromo, (list, tuple)) else np.nan
+            )
+            rewards = final_gen_df['final_reward']
+            fig, ax = plt.subplots()
+            ax.scatter(wing_spans, rewards, alpha=0.7)
+            ax.set_xlabel("Wing Span [m]"); ax.set_ylabel("Final Reward (avg last 5%)")
+            ax.set_title(f"Final Reward vs Wing Span (Gen {last_gen})")
+            ax.grid(True, alpha=0.4, ls=':')
+            save_plot(fig, 'final_reward_vs_wingspan')
+            print("✓ final reward vs wingspan plot →", os.path.join(out_dir, "final_reward_vs_wingspan.png"))
+        else:
+            print("Warning: final_reward not found for final generation – skipping wingspan plot")
+    else:
+        print("Warning: no chromosome data – skipping morphological reward plot")
+
+    plot_objectives_over_generations(df, out_dir)
 
     print(f"Tutte le metriche calcolate e i plot salvati in '{out_dir}'")
 

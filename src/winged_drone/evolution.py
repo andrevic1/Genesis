@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-# evolution.py – NSGA-II codesign con policy inheritance + checkpoint
-# V-PAR 1.0  (14-lug-2025)
+# evolution.py – NSGA-II co-design with policy inheritance & checkpointing
+# V-PAR 1.0  (14-Jul-2025)
 # ════════════════════════════════════════════════════════════════════════
-#  • Sul laptop (1 GPU) resta seriale.
-#  • Su server multi-GPU lancia training+evaluation in parallelo via Ray.
-#  • Nessun altro file richiesto; serve solo `pip/conda install ray-default filelock`.
+#  • On a single-GPU laptop, runs in serial mode.
+#  • On a multi-GPU server, launches training+evaluation in parallel via Ray.
+#  • No other files required; just install `ray` and `filelock`.
 # ════════════════════════════════════════════════════════════════════════
 
 from __future__ import annotations
@@ -16,9 +16,10 @@ from deap import base, creator, tools
 from filelock import FileLock
 import torch
 
+
 # ──────── PARALLEL (auto-detect) ────────────────────────────────────────
 def want_parallel() -> bool:
-    """True se ci sono ≥2 GPU **o** GA_PARALLEL=1.  GA_PARALLEL=0 forza off."""
+    """True if there are ≥2 GPUs or GA_PARALLEL=1. GA_PARALLEL=0 forces off."""
     flag = os.getenv("GA_PARALLEL", "auto").lower()
     if flag in ("0", "false", "no"):   return False
     if flag in ("1", "true", "yes"):   return True
@@ -26,13 +27,12 @@ def want_parallel() -> bool:
 
 USE_PARALLEL = want_parallel()
 
-# ───── valori non validi (sentinelle) ─────
-INVALID_V = {0}           # velocità media non valida
-INVALID_E = {-100}        # energia negativa corrispondente a +100 prima del flip
-INVALID_P = {0}           # progress / manovrabilità non valida
+# ───── Invalid sentinel values ─────
+INVALID_V = {0}           # invalid average velocity
+INVALID_E = {-100}        # negative energy sentinel (equivalent to +100 before flip)
+INVALID_P = {0}           # invalid progress/maneuverability
 
-
-# ──────── IMPORT RESTANTI  (dopo eventuale Ray init) ────────────────────
+# ──────── Remaining imports (after potential Ray init) ─────────────────
 import matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D   # noqa: F401 side-effect
@@ -42,16 +42,15 @@ from winged_drone_train import train as train_rl
 import eval as eval_mod
 
 # ╭──────────────────────────────────────────────────────────────────────╮
-# │  FUNZIONE REMOTA  training+evaluation (1 GPU)                       │
+# │  REMOTE function: training+evaluation (1 GPU)                       │
 # ╰──────────────────────────────────────────────────────────────────────╯
 # -------------------------------------------------------
-# funzione locale sempre presente
+# always-present local function
 def _train_and_eval_sync(chromo, parent_info, tag, cfg, return_arrays=True):
     parent_exp, parent_ckpt = parent_info
     urdf_file = UrdfMaker(chromo).create_urdf()
     exp = Path(urdf_file).stem
-    train_iters = cfg["TRAIN_ITERS_INHERIT"] if parent_exp and parent_ckpt \
-                  else cfg["TRAIN_ITERS"]
+    train_iters = cfg["TRAIN_ITERS_INHERIT"] if parent_exp and parent_ckpt else cfg["TRAIN_ITERS"]
 
     train_rl(exp, urdf_file, cfg["TRAIN_ENVS"], train_iters,
              parent_exp=parent_exp, parent_ckpt=parent_ckpt)
@@ -59,50 +58,30 @@ def _train_and_eval_sync(chromo, parent_info, tag, cfg, return_arrays=True):
     out = eval_mod.evaluation(exp_name=exp, urdf_file=urdf_file, ckpt=train_iters,
                               envs=cfg["EVAL_ENVS"], vmin=cfg["VMIN"], vmax=cfg["VMAX"],
                               return_arrays=return_arrays)
-
     if return_arrays:
         v_dict, e_dict, p_dict, _, extra = out
         max_p = extra["max_p"]
+        final_reward = extra.get("final_reward", 0.0)
+        steps90 = extra.get("steps90_pct", 0.0)
     else:
         v_dict, e_dict, p_dict, _, max_p = out
+        final_reward = 0.0
+        steps90 = 0.0
     meta = dict(
-        vel_v=v_dict["mean_v"], vel_E=-v_dict["mean_E"], vel_P=v_dict["mean_progress"],
-        eff_v=e_dict["mean_v"], eff_E=-e_dict["mean_E"], eff_P=e_dict["mean_progress"],
+        vel_v=v_dict["mean_v"],  vel_E=-v_dict["mean_E"],  vel_P=v_dict["mean_progress"],
+        eff_v=e_dict["mean_v"],  eff_E=-e_dict["mean_E"],  eff_P=e_dict["mean_progress"],
         prog_v=p_dict["mean_v"], prog_E=-p_dict["mean_E"], prog_P=p_dict["mean_progress"],
         train_it=train_iters, exp_name=exp,
-        max_p=max_p
-    )
-
-    ff   = [v_dict["mean_v"], -e_dict["mean_E"], p_dict["mean_progress"]]
-
-    return ff, meta, (extra if return_arrays else None)
-
-
-def _eval_only_sync(exp_name, urdf_file, ckpt, cfg, return_arrays=True):
-    out = eval_mod.evaluation(
-        exp_name=exp_name, urdf_file=urdf_file, ckpt=ckpt,
-        envs=cfg["EVAL_ENVS"], vmin=cfg["VMIN"], vmax=cfg["VMAX"],
-        return_arrays=return_arrays,
-    )
-
-    if return_arrays:
-        v_dict, e_dict, p_dict, _, extra = out
-        max_p = extra["max_p"]
-    else:
-        v_dict, e_dict, p_dict, _, max_p = out
-
-    meta = dict(
-        vel_v=v_dict["mean_v"], vel_E=-v_dict["mean_E"], vel_P=v_dict["mean_progress"],
-        eff_v=e_dict["mean_v"], eff_E=-e_dict["mean_E"], eff_P=e_dict["mean_progress"],
-        prog_v=p_dict["mean_v"], prog_E=-p_dict["mean_E"], prog_P=p_dict["mean_progress"],
-        train_it=ckpt, exp_name=exp_name,
         max_p=max_p,
+        final_reward=final_reward,         # <-- New: average final 5% reward
+        steps90_pct=steps90               # <-- New: % steps to reach 90% final reward
     )
+
     ff = [v_dict["mean_v"], -e_dict["mean_E"], p_dict["mean_progress"]]
+
     return ff, meta, (extra if return_arrays else None)
 
-
-# versione Ray (solo se parallelo)
+# Ray parallelization (if parallel)
 if USE_PARALLEL:
     import ray
     ray.init(log_to_driver=False)
@@ -111,18 +90,9 @@ if USE_PARALLEL:
     def train_and_eval_remote(*args, **kw):
         return _train_and_eval_sync(*args, **kw)
 
-    @ray.remote(num_gpus=1)
-    def eval_only_remote(*args, **kw):
-        return _eval_only_sync(*args, **kw)
-
-else:  # --- seriale -------------------------------------------------
+else:  # --- serial mode -----------------------------------------------
     def train_and_eval_remote(*args, **kw):
         return _train_and_eval_sync(*args, **kw)
-
-    def eval_only_remote(*args, **kw):
-        return _eval_only_sync(*args, **kw)
-
-
 
 # ╭─────────────────────────────────────────────────────────────╮
 # │  Post-processing helper                                     │
@@ -133,12 +103,12 @@ class PostAnalyzer:
                  pkl_path: Optional[str] = None):
         self.df = pd.read_csv(csv_path)
         # ------------------------------------------------------------------
-        # sostituisci ogni sentinella con NaN (così Matplotlib li ignora)
-        for col in ("vel_v","eff_v","prog_v"):
+        # replace each sentinel with NaN (so Matplotlib ignores them)
+        for col in ("vel_v", "eff_v", "prog_v"):
             self.df.loc[self.df[col].isin(INVALID_V), col] = np.nan
-        for col in ("vel_E","eff_E","prog_E"):
+        for col in ("vel_E", "eff_E", "prog_E"):
             self.df.loc[self.df[col].isin(INVALID_E), col] = np.nan
-        for col in ("vel_P","eff_P","prog_P"):
+        for col in ("vel_P", "eff_P", "prog_P"):
             self.df.loc[self.df[col].isin(INVALID_P), col] = np.nan
         # ------------------------------------------------------------------
         self.stats = stats_obj
@@ -147,35 +117,50 @@ class PostAnalyzer:
             with open(pkl_path, "rb") as f:
                 self.stats = pickle.load(f)
 
-        self.vel = self.df[["vel_v",  "vel_E",  "vel_P"]].rename(
-                                    columns={"vel_v":"v","vel_E":"E","vel_P":"P"})
-        self.eff = self.df[["eff_v",  "eff_E",  "eff_P"]].rename(
-                                    columns={"eff_v":"v","eff_E":"E","eff_P":"P"})
-        self.prog= self.df[["prog_v","prog_E","prog_P"]].rename(
-                                    columns={"prog_v":"v","prog_E":"E","prog_P":"P"})
+        self.vel = self.df[["vel_v", "vel_E", "vel_P"]].rename(columns={"vel_v": "v", "vel_E": "E", "vel_P": "P"})
+        self.eff = self.df[["eff_v", "eff_E", "eff_P"]].rename(columns={"eff_v": "v", "eff_E": "E", "eff_P": "P"})
+        self.prog = self.df[["prog_v", "prog_E", "prog_P"]].rename(columns={"prog_v": "v", "prog_E": "E", "prog_P": "P"})
 
     def _plot_triangles(self, ax, xs, ys, color="gray", alpha=0.25, lw=0.8):
         """
-        Disegna segmenti che collegano i tre punti corrispondenti allo
-        stesso individuo.  *xs* e *ys* sono liste/array di len == 3.
+        Draw line segments connecting the three points corresponding to the
+        same individual.  *xs* and *ys* are lists/arrays of length 3.
         """
         for x, y in zip(xs, ys):
-            # chiudi il triangolo ripetendo il primo punto
+            # close the triangle by repeating the first point
             ax.plot([x[0], x[1], x[2], x[0]],
                     [y[0], y[1], y[2], y[0]],
                     color=color, alpha=alpha, lw=lw)
             
-    # —— 1) pairwise scatter-matrix (tutte le triple accorpate) -------------
-    def scatter_matrix(self, out="scatter_matrix.png"):
-        cols = ["vel_v", "vel_E", "vel_P",
-                "eff_v", "eff_E", "eff_P",
-                "prog_v", "prog_E", "prog_P"]
-        self.df[cols] = self.df[cols].fillna(method="ffill")
-        pd.plotting.scatter_matrix(self.df[cols], figsize=(8, 8),
-                                   alpha=0.4, diagonal="hist")
-        plt.suptitle("All objectives (3×3) – raw scatter")
-        plt.savefig(out, dpi=150); plt.close()
-        print("✓ scatter-matrix →", out)
+    def final_reward_steps(self, out="final_reward_steps.png"):
+        """Plot final episodic reward vs. generation and % steps to reach 90% reward (two y-axes)."""
+        if "final_reward" not in self.df.columns or "steps90_pct" not in self.df.columns:
+            print("No final_reward or steps90_pct in data – skip plot"); return
+        # Determine best individual per generation (highest final_reward)
+        idx = self.df.groupby("generation")["final_reward"].idxmax()
+        gens = self.df.loc[idx, "generation"].to_numpy(dtype=float)
+        final_vals = self.df.loc[idx, "final_reward"].to_numpy(dtype=float)
+        steps_vals = self.df.loc[idx, "steps90_pct"].to_numpy(dtype=float)
+        # Sort by generation (in case of unsorted grouping)
+        order = np.argsort(gens)
+        gens = gens[order]; final_vals = final_vals[order]; steps_vals = steps_vals[order]
+
+        fig, ax1 = plt.subplots()
+        ax2 = ax1.twinx()
+        ax1.plot(gens, final_vals, color="tab:blue", label="Final Reward")
+        ax2.plot(gens, steps_vals, color="tab:red", label="Steps to 90% (pct)")
+        ax1.set_xlabel("Generation")
+        ax1.set_ylabel("Final Reward (avg last 5%)", color="tab:blue")
+        ax2.set_ylabel("Steps to 90% Final Reward [%]", color="tab:red")
+        # Combine legends from both axes
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1+lines2, labels1+labels2, loc="upper left")
+        plt.title("Evolution of Final Reward and Learning Speed")
+        plt.tight_layout()
+        plt.savefig(out, dpi=150)
+        plt.close()
+        print("✓ final reward/learning speed plot →", out)
 
     # —— 2) progress (best per gen) ----------------------------------------
     def fronts_progress_V(self, out="best_vel_per_gen.png"):
@@ -192,14 +177,14 @@ class PostAnalyzer:
         if self.stats is None:
             print("No stats – skip progress plot"); return
 
-        # curva 1 ─ migliore progress per generazione
+        # curve 1 – best progress per generation
         M = np.where(np.isin(self.stats.M, list(INVALID_P)), np.nan, self.stats.M)
         best_prog = np.nanmax(M, axis=1)
 
-        # curva 2 ─ minimal_p salvato nel CSV
+        # curve 2 – minimal_p saved in the CSV
         if "minimal_p" in self.df.columns:
             min_p_ser = self.df.groupby("generation")["minimal_p"].first()
-            # assicurati che abbia la stessa lunghezza di best_prog
+            # ensure it has the same length as best_prog
             min_p_curve = min_p_ser.reindex(range(len(best_prog)))
 
         plt.figure()
@@ -213,7 +198,6 @@ class PostAnalyzer:
         plt.savefig(out, dpi=150); plt.close()
         print("✓ progress plot →", out)
 
-
     # —— 2) progress (best per gen) ----------------------------------------
     def fronts_progress_E(self, out="best_eff_per_gen.png"):
         if self.stats is None:
@@ -224,134 +208,57 @@ class PostAnalyzer:
         plt.tight_layout(); plt.savefig(out, dpi=150); plt.close()
         print("✓ progress plot →", out)
 
-    # —— 3) 3-D Pareto front (tripla per tripla) ----------------------------
-    def pareto_front(self, out="pareto_front_3d.png"):
-        pts, labels = [], []
-        for _, r in self.df.iterrows():
-            pts.append((r.vel_v, r.vel_E, r.vel_P));  labels.append("vel")
-            pts.append((r.eff_v, r.eff_E, r.eff_P));  labels.append("eff")
-            pts.append((r.prog_v, r.prog_E, r.prog_P)); labels.append("prog")
-        pts = np.asarray(pts)
-
-        fig = plt.figure(figsize=(6, 5))
-        ax = fig.add_subplot(111, projection='3d')
-        for tag, col, m in zip(["vel", "eff", "prog"],
-                               ["tab:red", "tab:green", "tab:blue"],
-                               ["o", "^", "s"]):
-            mask = np.array(labels) == tag
-            ax.scatter(pts[mask, 0], pts[mask, 1], pts[mask, 2],
-                       c=col, marker=m, label=tag, alpha=0.7)
-        ax.set_xlabel("velocity  ↑")
-        ax.set_ylabel("-energy  ↑")
-        ax.set_zlabel("progress ↑")
-        plt.legend(); plt.tight_layout()
-        plt.savefig(out, dpi=150); plt.close()
-        print("✓ pareto 3-D →", out)
-
-    # ---------------------------------------------------------------
-    # 4) NUOVO – Pareto 2-D  (vel vs efficienza)
-    # ---------------------------------------------------------------
-    def pareto_vel_eff(self, out="pareto_vel_eff.png", triangles=True):
-        plt.figure(figsize=(5,4))
-        ax = plt.gca()
-
-        # 1) scatter “classico”
-        ax.scatter(self.vel.v,  self.vel.E,  c="tab:red",   label="vel‐opt", alpha=0.6)
-        ax.scatter(self.eff.v,  self.eff.E,  c="tab:green", label="eff‐opt", alpha=0.6)
-        ax.scatter(self.prog.v, self.prog.E, c="tab:blue",  label="prog‐opt", alpha=0.6)
-
-        # 2) opzionale triangolo per individuo
-        if triangles:
-            xs = np.column_stack([self.vel.v,  self.eff.v,  self.prog.v])
-            ys = np.column_stack([self.vel.E,  self.eff.E,  self.prog.E])
-            self._plot_triangles(ax, xs, ys)
-
-        ax.set_xlabel("velocity  [m/s]  ↑")
-        ax.set_ylabel("−energy [J/m]  ↑")
-        ax.set_title("Pareto: velocity vs efficiency")
-        ax.legend(); plt.tight_layout()
-        plt.savefig(out, dpi=150); plt.close()
-        print("✓ pareto vel-eff →", out)
-
-
-    # ---------------------------------------------------------------
-    # 5) NUOVO – Pareto 2-D  (vel vs manovrabilità)
-    # ---------------------------------------------------------------
-    def pareto_vel_man(self, out="pareto_vel_maneuver.png", triangles=True):
-        plt.figure(figsize=(5,4))
-        plt.scatter(self.vel.v,   self.vel.P,  c="tab:red",   label="vel‐opt", alpha=0.6)
-        plt.scatter(self.prog.v,  self.prog.P, c="tab:blue",  label="prog‐opt", alpha=0.6)
-        plt.scatter(self.eff.v,   self.eff.P,  c="tab:green", label="eff‐opt", alpha=0.6)
-        if triangles:
-            xs = np.column_stack([self.vel.v,   self.eff.v,   self.prog.v])
-            ys = np.column_stack([self.vel.P,   self.eff.P,   self.prog.P])
-            self._plot_triangles(plt.gca(), xs, ys, color="gray", alpha=0.25, lw=0.8)
-        plt.xlabel("velocity  [m/s]  ↑")
-        plt.ylabel("progress [m]  ↑")
-        plt.title("Pareto: velocity vs maneuverability")
-        plt.legend(); plt.tight_layout()
-        plt.savefig(out, dpi=150); plt.close()
-        print("✓ pareto vel-man →", out)
-
-    # ---------------------------------------------------------------
-    # 5) NUOVO – Pareto 2-D  (eff vs manovrabilità)
-    # ---------------------------------------------------------------
-    def pareto_eff_man(self, out="pareto_eff_maneuver.png", triangles=True):
-        plt.figure(figsize=(5,4))
-        plt.scatter(self.eff.E , self.eff.P, c="tab:green", label="eff‐opt", alpha=0.6)
-        plt.scatter(self.prog.E, self.prog.P, c="tab:blue",  label="prog‐opt", alpha=0.6)
-        plt.scatter(self.vel.E , self.vel.P, c="tab:red",   label="vel‐opt", alpha=0.6)
-        if triangles:
-            xs = np.column_stack([self.eff.E, self.prog.E, self.vel.E])
-            ys = np.column_stack([self.eff.P, self.prog.P, self.vel.P])
-            self._plot_triangles(plt.gca(), xs, ys, color="gray", alpha=0.25, lw=0.8)
-        plt.xlabel("−energy [J/m]  ↑")
-        plt.ylabel("progress [m]  ↑")
-        plt.title("Pareto: efficiency vs maneuverability")
-        plt.legend(); plt.tight_layout()
-        plt.savefig(out, dpi=150); plt.close()
-
     # —— master call --------------------------------------------------------
     def analyze(self, prefix="analysis"):
-        self.scatter_matrix(f"{prefix}_scatter.png")
         self.fronts_progress_V(f"{prefix}_progress_vel.png")
         self.fronts_progress_P(f"{prefix}_progress_prog.png")
         self.fronts_progress_E(f"{prefix}_progress_eff.png")
-        self.pareto_front (f"{prefix}_pareto3D.png")
-        self.pareto_vel_eff(f"{prefix}_pareto_vel_eff.png")
-        self.pareto_vel_man(f"{prefix}_pareto_vel_man.png")
-        self.pareto_eff_man(f"{prefix}_pareto_eff_man.png")
+        self.final_reward_steps(f"{prefix}_reward_speed.png")
+ 
 
 # ╭─────────────────────────────────────────────────────────────╮
 # │  Helpers – chromosome & DB                                  │
 # ╰─────────────────────────────────────────────────────────────╯
 class Chromosome_Drone:
-    # 1) definisci le scelte ammissibili per ogni gene
+    # Define the allowed choices for each gene
     _CHOICES = [
-        [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80],      
-        [0.15, 0.2, 0.25, 0.30, 0.35],      
-        [-0.35, -0.30, -0.25, -0.20, -0.15],
-        [-0.35, -0.30, -0.25, -0.20, -0.15],      
-        [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80],      
-        [0.10, 0.12, 0.14, 0.16, 0.18, 0.20],                        
-        [0.08, 0.10, 0.12, 0.14, 0.16, 0.18],                        
-        [0.08, 0.10, 0.12, 0.14, 0.16, 0.18],                        
-        [0.06, 0.08, 0.10, 0.12, 0.14, 0.16],                              
-        [1.00],                              
-        [-30.00, -20.00, -10.00, 0.00, 10.00, 20.00, 30.00],                 
-        [0.10],                              
-        [0.10, 0.12, 0.14, 0.16, 0.18],
-        [1.5, 2.0, 2.5, 3.0],
-        [1.5, 2.0, 2.5, 3.0],
+        # 0: wing_span (m)
+        [0.35, 0.38, 0.41, 0.44, 0.47, 0.50, 0.53, 0.56, 0.59, 0.62, 0.65],
+        # 1: wing_aspect_ratio (span/chord)
+        [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+        # 2: fus_length (m)
+        [0.35, 0.38, 0.41, 0.44, 0.47, 0.50, 0.53, 0.56, 0.59, 0.62, 0.65],
+        # 3: cg_x_ratio (fus_cg_x / fus_length)
+        [-0.7, -0.6, -0.5, -0.4, -0.3, -0.2, -0.1],
+        # 4: attach_x_ratio (wing_attach_x / fus_length)
+        [0.3, 0.35, 0.40, 0.45, 0.5, 0.55, 0.6],
+        # 5: elevator_span (m)
+        [0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
+        # 6: elevator_aspect_ratio
         [1.0, 1.5, 2.0, 2.5, 3.0],
-        [0, -1.0, -2.0, -3.0]           
+        # 7: rudder_span (m)
+        [0.08, 0.10, 0.12, 0.14, 0.16, 0.18],
+        # 8: rudder_aspect_ratio
+        [1.0, 1.5, 2.0, 2.5, 3.0],
+        # 9: dihedral_deg (degrees)
+        [-20.0, -15.0, -10.0, 5.0, 0.0, 5.0, 10.0, 15.0, 20.0],
+        # 10: hinge_le_ratio (fraction of chord)
+        [0.10, 0.14, 0.18, 0.22, 0.26, 0.30, 0.34, 0.38, 0.42],
+        # 11: sweep_multiplier
+        [1.5, 2.0, 2.5, 3.0],
+        # 12: twist_multiplier
+        [1.5, 2.0, 2.5, 3.0],
+        # 13: cl_alpha_2d
+        [2.0],
+        # 14: alpha0_2d (degrees)
+        [0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0]
     ]
 
     def random(self):
-        """Pesca un valore random **all’interno della lista** di ogni gene."""
+        """Pick a random value from each gene's list."""
         return [random.choice(options) for options in self._CHOICES]
 
-    # se ti serve ancora conoscere i bounds per la mutazione:
+    # If you still need the bounds for mutation:
     @classmethod
     def bounds(cls):
         mins = [min(opts) for opts in cls._CHOICES]
@@ -365,11 +272,11 @@ class FitnessDB:
         self.df    = pd.read_csv(self.path) if self.path.exists() else self._blank()
         if not self.path.exists(): self.df.to_csv(self.path, index=False)
 
-    def lookup(self, chromo):                          # evita ricalcoli
+    def lookup(self, chromo):
         row = self.df[self.df.chromosome == str(list(chromo))]
         if row.empty:
             return None
-        # salva anche max_p sull'individuo dopo aver preso i ff (gestito fuori)
+        # also saves max_p on the individual after retrieving ff (handled outside)
         return [row[f"ff_{i}"].min() for i in range(self.n_obj)]
 
     def insert(self, chromo, ff, meta):
@@ -381,24 +288,19 @@ class FitnessDB:
         lock = FileLock(str(self.path)+".lock")
         with lock:
             self.df = pd.concat([self.df, row.to_frame().T], ignore_index=True)
-            row.to_frame().T.to_csv(self.path, mode="a",
-                                     header=not self.path.exists(), index=False)
+            row.to_frame().T.to_csv(self.path, mode="a", header=not self.path.exists(), index=False)
 
     def _blank(self):
         cols = ["timestamp", "chromosome"] + [f"ff_{i}" for i in range(self.n_obj)] + [
             "generation", "exp_name", "train_it", "max_p",
-            "minimal_p",           # <‑‑ NUOVO
+            "minimal_p",           # (new)
             "vel_v","vel_E","vel_P",
             "eff_v","eff_E","eff_P",
             "prog_v","prog_E","prog_P"]
         return pd.DataFrame([{c: np.nan for c in cols}])
 
-
     def get_row(self, chromo):
-        """
-        Ritorna la riga intera (pandas Series) relativa al cromosoma,
-        oppure None se non esiste ancora nel CSV.
-        """
+        """Return the entire row (pandas Series) for the chromosome, or None if it does not exist yet."""
         row = self.df[self.df.chromosome == str(list(chromo))]
         return None if row.empty else row.iloc[0]
 
@@ -432,7 +334,7 @@ class CodesignDEAP:
     EVAL_ENVS             = 256
     VMIN, VMAX            = 6.0, 18.0
     FAIL_VAL              = 1e6
-    WEIGHTS               = (+1.0, -1.0, +1.0)   # maximize vel, -energy, maneu
+    WEIGHTS               = (+1.0, -1.0, +1.0)   # maximize vel, -energy, maneuverability
 
     def __init__(self, n_pop=12, n_gen=20, cx_pb=0.8, mut_pb=0.3,
                  csv="deap_temp", inherit_policy=False,
@@ -468,79 +370,48 @@ class CodesignDEAP:
             if len(options) == 1:
                 continue
             if random.random() < indpb:
-                # evita di riestrarre lo stesso valore
+                # avoid re-selecting the same value
                 ind[i] = random.choice([v for v in options if v != ind[i]])
         return (ind,)
-
 
     def _evaluate(self, indiv):
         chromo = list(indiv)
         print(f"[evaluate] gen={getattr(self,'_gen',0)}  chr={chromo}")
-        # ---- caso 1: cromosoma già presente → solo evaluation ----
+        # ---- case 1: chromosome already present -> evaluation only ----
         cached_row = self.db.get_row(chromo)
         if cached_row is not None:
-            print(f"   ↪ cache‑hit  exp={cached_row.exp_name}  ckpt={int(cached_row.train_it)}   (solo evaluation)")
-            urdf_file = UrdfMaker(chromo).create_urdf()
-            exp_name  = cached_row.exp_name
-            train_it  = int(cached_row.train_it)
-
-            cfg_eval = dict(EVAL_ENVS=self.EVAL_ENVS,
-                            VMIN=self.VMIN, VMAX=self.VMAX)
-
-            if USE_PARALLEL:
-                fut = eval_only_remote.remote(
-                    exp_name, urdf_file, train_it, cfg_eval, True)
-                indiv._pending_future = fut
-                return (0.0, 0.0, 0.0)   # placeholder finché Ray non finisce
-
-            # seriale
-            ff, meta, extra = _eval_only_sync(
-                exp_name, urdf_file, train_it, cfg_eval, True)
-            print(f"   ✔ sync‑eval  ff={ff}  max_p={meta['max_p']:.2f}")
-            indiv._meta_raw = meta
-            indiv.max_p     = meta["max_p"]
-            if extra:
-                indiv._p_s = extra["p_s"];  indiv._v_s = extra["v_s"];  indiv._E_s = extra["E_s"]
-            return tuple(ff)
+            print(f"   ↪ cache‑hit  exp={cached_row.exp_name}")
         else:
-            print(f"   ↪ NEW chromo → training for {self.TRAIN_ITERS} iters "
-                f"(or {self.TRAIN_ITERS_INHERIT} if inheritance)")
-            # ---- caso 2: cromosoma nuovo → training + evaluation ----
-            parent_info = (getattr(indiv, "parent_exp", None),
-                        getattr(indiv, "parent_ckpt", None))
-            cfg = dict(TRAIN_ITERS=self.TRAIN_ITERS,
-                    TRAIN_ITERS_INHERIT=self.TRAIN_ITERS_INHERIT,
-                    TRAIN_ENVS=self.TRAIN_ENVS,
-                    EVAL_ENVS=self.EVAL_ENVS,
+            print(f"   ↪ NEW chromosome → training for {self.TRAIN_ITERS} iterations (or {self.TRAIN_ITERS_INHERIT} if inheritance)")
+        # ---- case 2: new chromosome -> training + evaluation ----
+        parent_info = (getattr(indiv, "parent_exp", None), getattr(indiv, "parent_ckpt", None))
+        cfg = dict(TRAIN_ITERS=self.TRAIN_ITERS, TRAIN_ITERS_INHERIT=self.TRAIN_ITERS_INHERIT,
+                    TRAIN_ENVS=self.TRAIN_ENVS, EVAL_ENVS=self.EVAL_ENVS,
                     VMIN=self.VMIN, VMAX=self.VMAX)
 
-            if USE_PARALLEL:
-                fut = train_and_eval_remote.remote(
-                    chromo, parent_info, self.tag, cfg, True)
-                indiv._pending_future = fut
-                return (0.0, 0.0, 0.0)
+        if USE_PARALLEL:
+            fut = train_and_eval_remote.remote(chromo, parent_info, self.tag, cfg, True)
+            indiv._pending_future = fut
+            return (0.0, 0.0, 0.0)
 
-            ff, meta, extra = _train_and_eval_sync(
-                chromo, parent_info, self.tag, cfg, True)
-            print(f"   ✔ sync‑train+eval  ff={ff}  max_p={meta['max_p']:.2f}")
-            indiv._meta_raw = meta
-            indiv.max_p     = meta["max_p"]
-            if extra:
-                indiv._p_s = extra["p_s"];  indiv._v_s = extra["v_s"];  indiv._E_s = extra["E_s"]
-            return tuple(ff)
-
-
+        ff, meta, extra = _train_and_eval_sync(chromo, parent_info, self.tag, cfg, True)
+        print(f"   ✔ sync‑train+eval  ff={ff}  max_p={meta['max_p']:.2f}")
+        indiv._meta_raw = meta
+        indiv.max_p     = meta["max_p"]
+        if extra:
+            indiv._p_s = extra["p_s"];  indiv._v_s = extra["v_s"];  indiv._E_s = extra["E_s"]
+        return tuple(ff)
 
     def _pick_triples(self, p_s, v_s, E_s, minimal_p):
-        idx_p = np.argmax(p_s)                     # progress max (non filtrato)
+        idx_p = np.argmax(p_s)                     # progress max (unfiltered)
         mask  = np.where(p_s >= minimal_p)[0]
         if mask.size == 0:
-            # sentinelle
+            # sentinels
             vel = dict(mean_v=0.0, mean_E=100.0, mean_progress=0.0)
             eff = dict(mean_v=0.0, mean_E=100.0, mean_progress=0.0)
         else:
-            idx_v = mask[np.argmax(v_s[mask])]     # max vel in zona valida
-            idx_e = mask[np.argmin(E_s[mask])]     # min energy in zona valida
+            idx_v = mask[np.argmax(v_s[mask])]     # max vel in valid region
+            idx_e = mask[np.argmin(E_s[mask])]     # min energy in valid region
             vel = dict(mean_v=v_s[idx_v], mean_E=E_s[idx_v], mean_progress=p_s[idx_v])
             eff = dict(mean_v=v_s[idx_e], mean_E=E_s[idx_e], mean_progress=p_s[idx_e])
         prog = dict(mean_v=v_s[idx_p], mean_E=E_s[idx_p], mean_progress=p_s[idx_p])
@@ -548,15 +419,14 @@ class CodesignDEAP:
 
     def _finalize_and_persist(self, ind, minimal_p):
         if not hasattr(ind, "_p_s"):
-            return                     # individui falliti o già in cache
+            return                     # failed individuals or already cached
 
-        vel_d, eff_d, prog_d = self._pick_triples(
-            ind._p_s, ind._v_s, ind._E_s, minimal_p)
+        vel_d, eff_d, prog_d = self._pick_triples(ind._p_s, ind._v_s, ind._E_s, minimal_p)
 
-        # Fitness finale (+vel, -E, +prog)
+        # Final fitness (+vel, -E, +prog)
         ff_final = (vel_d["mean_v"], -eff_d["mean_E"], prog_d["mean_progress"])
 
-        # meta di origine (training o solo eval) + nuovi campi filtrati
+        # origin metadata (training or eval-only) + new filtered fields
         meta = dict(getattr(ind, "_meta_raw", {}))
         meta.update(dict(
             max_p  = ind.max_p,
@@ -566,11 +436,9 @@ class CodesignDEAP:
             prog_v = prog_d["mean_v"], prog_E = -prog_d["mean_E"], prog_P = prog_d["mean_progress"],
         ))
         print(f"[finalize] gen={self._gen} chr={list(ind)} "
-                f"vel={vel_d['mean_v']:.2f}  effE={eff_d['mean_E']:.2f}  "
-                f"prog={prog_d['mean_progress']:.2f}")
+                f"vel={vel_d['mean_v']:.2f}  effE={eff_d['mean_E']:.2f}  prog={prog_d['mean_progress']:.2f}")
         self.db.insert(list(ind), ff_final, dict(generation=self._gen, **meta))
         ind.fitness.values = ff_final
-
 
     # ────────────────────────────────────────────────────────────────
     #  NSGA‑II – evolutionary loop  (select ▸ vary ▸ train/eval ▸ survive)
@@ -580,7 +448,7 @@ class CodesignDEAP:
         pop = self.tb.pop(self.n_pop)
         self._gen = 0
         self._train_eval_population(pop)          # train + eval + persist
-        pop = tools.selNSGA2(pop, self.n_pop)     # assegna anche crowding
+        pop = tools.selNSGA2(pop, self.n_pop)     # also assigns crowding
         self._after_generation(pop)
 
         # ─── GEN ≥ 1 ───
@@ -588,23 +456,23 @@ class CodesignDEAP:
             self._gen = g
             print(f"\n════════ Generation {g}/{self.n_gen} ════════")
 
-            # 1) parent‑selection (richiede crowding_dist calcolata qui sopra)
+            # 1) parent-selection (requires crowding_dist computed above)
             parents   = tools.selTournamentDCD(pop, len(pop))
             offspring = [self.tb.clone(p) for p in parents]
 
-            # 2) variazione (+ inheritance) prima del training
+            # 2) variation (+ inheritance) before training
             self._apply_variation(offspring, parents)
 
-            # 3) train + eval dei figli  → persist / minimal_p
+            # 3) train + eval offspring  → persist / minimal_p
             self._train_eval_population(offspring)
 
-            # 4) survivor‑selection NSGA‑II  → nuova POP (con crowding aggiornata)
+            # 4) survivor-selection NSGA-II  → new POP (with updated crowding)
             pop = tools.selNSGA2(pop + offspring, self.n_pop)
 
-            # 5) logging / grafici
+            # 5) logging / plots
             self._after_generation(pop)
 
-        # ─── save stats globali ───
+        # ─── save global stats ───
         with open(f"stats_{self.tag}.pkl", "wb") as f:
             import pickle; pickle.dump(self.stats, f)
         print("Statistics saved ✔")
@@ -613,15 +481,15 @@ class CodesignDEAP:
 
     def _train_eval_population(self, population):
         """
-        Allena + valuta tutti gli individui senza fitness.
-        Gestisce Ray e persiste la fitness filtrata tramite _finalize_and_persist().
+        Train + evaluate all individuals without fitness.
+        Manages Ray and persists the filtered fitness via _finalize_and_persist().
         """
-        # 1) lancia training/eval (può creare future Ray)
+        # 1) launch training/eval (may create Ray futures)
         for ind in population:
             if not ind.fitness.valid:
                 ind.fitness.values = self.tb.evaluate(ind)
 
-        # 2) aspetta i job Ray
+        # 2) wait for Ray jobs
         if USE_PARALLEL:
             pend = [ind for ind in population if hasattr(ind, "_pending_future")]
             if pend:
@@ -636,7 +504,7 @@ class CodesignDEAP:
                     del ind._pending_future
                     print(f"   ✅ Ray done chr={list(ind)} ff={ff} max_p={meta['max_p']:.2f}")
 
-        # 3) minimal_p dinamico / fisso
+        # 3) minimal_p dynamic/fixed
         peaks = [getattr(ind, "max_p", np.nan) for ind in population]
         peaks = [p for p in peaks if not np.isnan(p)]
         if self.use_dynamic_p and peaks:
@@ -644,8 +512,7 @@ class CodesignDEAP:
             minimal_p = 0.9 * np.percentile(peaks, perc)
         else:
             minimal_p = self.fixed_p
-        print(f"[Gen {self._gen}] minimal_p = {minimal_p:.2f} "
-            f"(dynamic={self.use_dynamic_p}, pct_above={self.pct_above}%)")
+        print(f"[Gen {self._gen}] minimal_p = {minimal_p:.2f} (dynamic={self.use_dynamic_p}, pct_above={self.pct_above}%)")
 
         # 4) finalize → CSV
         for ind in population:
@@ -656,13 +523,13 @@ class CodesignDEAP:
 
     def _apply_variation(self, offspring, parents):
         """
-        Crossover, mutazione e opzionale inheritance **prima** del training.
+        Crossover, mutation, and optional inheritance **before** training.
         """
-        # pulizia attributi custom
+        # clean up custom attributes
         for ch in offspring:
             for a in ("exp_name","parent_exp","parent_ckpt","_pending_future",
-                    "_meta_raw","_p_s","_v_s","_E_s","_evaluated",
-                    "_persisted","max_p"):
+                      "_meta_raw","_p_s","_v_s","_E_s","_evaluated",
+                      "_persisted","max_p"):
                 if hasattr(ch, a):
                     delattr(ch, a)
 
@@ -675,13 +542,13 @@ class CodesignDEAP:
                 if hasattr(c1.fitness, "values"): del c1.fitness.values
                 if hasattr(c2.fitness, "values"): del c2.fitness.values
 
-            # mutazione
+            # mutation
             if random.random() < self.mut_pb:
                 self.tb.mutate(c1);  del c1.fitness.values
             if random.random() < self.mut_pb:
                 self.tb.mutate(c2);  del c2.fitness.values
 
-            # inheritance → assegna exp/ckpt PRIMA del training
+            # inheritance → assign exp/ckpt BEFORE training
             if self.inherit_policy:
                 infos = []
                 for p in (parents[i], parents[i+1]):
@@ -696,7 +563,7 @@ class CodesignDEAP:
     # -----------------------------------------------------------------
 
     def _after_generation(self, pop):
-        """Aggiorna stats, fa grafici e stampa riepilogo della generazione."""
+        """Update stats, generate plots, and print generation summary."""
         g = self._gen
         self.stats.record(g, pop)
         if g % 3 == 0 or g == self.n_gen:
@@ -705,9 +572,7 @@ class CodesignDEAP:
         best_v = np.nanmax(self.stats.V[g])
         best_e = -np.nanmin(self.stats.E[g])
         best_p = np.nanmax(self.stats.M[g])
-        print(f"--- Gen {g} summary  best_vel={best_v:.2f} "
-            f"best_eff={best_e:.2f}  best_prog={best_p:.2f}")
-
+        print(f"--- Gen {g} summary  best_vel={best_v:.2f} best_eff={best_e:.2f}  best_prog={best_p:.2f}")
 
 # ╭─────────────────────────────────────────────────────────────╮
 # │  CLI                                                       │
@@ -721,5 +586,4 @@ if __name__ == "__main__":
     ap.add_argument("--inherit", action="store_true", default=False,)
     args = ap.parse_args()
 
-    CodesignDEAP(n_pop=args.pop, n_gen=args.gen,
-                 inherit_policy=args.inherit).run()
+    CodesignDEAP(n_pop=args.pop, n_gen=args.gen, inherit_policy=args.inherit).run()

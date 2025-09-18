@@ -286,7 +286,7 @@ class RigidSolver(Solver):
             cd0             = 0.05,
             cd0_fus         = 0.25,
             m_smooth        = 0.2,
-            max_thrust      = 4.0,
+            max_thrust      = 10.0,
             cp_start        = 0.25,
             cp_end          = 0.50,
             cg_to_chord     = 0.31,
