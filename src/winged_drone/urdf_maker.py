@@ -95,7 +95,7 @@ class UrdfMaker:
     _RHO_WING = 20
     _RHO_ELEV = 20
     _RHO_RUDD = 20
-    _RHO_PROP = 200.0
+    _RHO_PROP = 500.0
 
     # Lever arms as fraction of chord (from LE reference frame)
     _CG_RATIO   = 0.31

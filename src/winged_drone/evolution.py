@@ -639,7 +639,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--pop", type=int, default=4)
     ap.add_argument("--gen", type=int, default=3)
-    ap.add_argument("--train_it", type=int, default=50)
+    ap.add_argument("--train_it", type=int, default=100)
     ap.add_argument("--inherit", action="store_true", default=False,)
     args = ap.parse_args()
 
