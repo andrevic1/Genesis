@@ -40,7 +40,7 @@ from mpl_toolkits.mplot3d import Axes3D   # noqa: F401 side-effect
 from urdf_maker import UrdfMaker
 from winged_drone_train import train as train_rl
 import eval as eval_mod
-
+from tensorboard.backend.event_processing import event_accumulator
 # ╭──────────────────────────────────────────────────────────────────────╮
 # │  REMOTE function: training+evaluation (1 GPU)                       │
 # ╰──────────────────────────────────────────────────────────────────────╯
@@ -58,28 +58,83 @@ def _train_and_eval_sync(chromo, parent_info, tag, cfg, return_arrays=True):
     out = eval_mod.evaluation(exp_name=exp, urdf_file=urdf_file, ckpt=train_iters,
                               envs=cfg["EVAL_ENVS"], vmin=cfg["VMIN"], vmax=cfg["VMAX"],
                               return_arrays=return_arrays)
+    
+    # Read TB logs and compute smoothed reward checkpoints (10..100%)
+    tb_log_dir = os.path.join("logs", "ea", exp)
+    reward_curve = extract_reward_curve(tb_log_dir, train_iters, n_points=10, win_frac=0.05)
+
     if return_arrays:
         v_dict, e_dict, p_dict, _, extra = out
         max_p = extra["max_p"]
-        final_reward = extra.get("final_reward", 0.0)
-        steps90 = extra.get("steps90_pct", 0.0)
     else:
         v_dict, e_dict, p_dict, _, max_p = out
-        final_reward = 0.0
-        steps90 = 0.0
     meta = dict(
         vel_v=v_dict["mean_v"],  vel_E=-v_dict["mean_E"],  vel_P=v_dict["mean_progress"],
         eff_v=e_dict["mean_v"],  eff_E=-e_dict["mean_E"],  eff_P=e_dict["mean_progress"],
         prog_v=p_dict["mean_v"], prog_E=-p_dict["mean_E"], prog_P=p_dict["mean_progress"],
         train_it=train_iters, exp_name=exp,
         max_p=max_p,
-        final_reward=final_reward,         # <-- New: average final 5% reward
-        steps90_pct=steps90               # <-- New: % steps to reach 90% final reward
+        **reward_curve
     )
 
     ff = [v_dict["mean_v"], -e_dict["mean_E"], p_dict["mean_progress"]]
 
     return ff, meta, (extra if return_arrays else None)
+
+def extract_reward_curve(log_dir: str, train_iters: int, n_points: int = 10, win_frac: float = 0.05) -> dict:
+    """
+    Extract reward values at 10%, 20%, …, 100% of training using a moving average
+    over a window equal to 5% (default) of total training steps.
+
+    Assumptions:
+      • TensorBoard scalar tag is exactly "Train/mean_reward".
+      • Window is defined in *training steps* (± half-window around target step).
+      • If the window has no events (sparse logging), fallback to the nearest event.
+
+    Returns:
+        dict: {"rew_10pct": float, ..., "rew_100pct": float}
+    """
+    ea = event_accumulator.EventAccumulator(log_dir)
+    try:
+        ea.Reload()
+    except Exception:
+        return {}
+
+    # Fixed key as requested
+    key = "Train/mean_reward"
+    if key not in ea.Tags().get("scalars", []):
+        return {}
+
+    events = ea.Scalars(key)
+    if not events:
+        return {}
+
+    # Extract steps and values from TB
+    steps = np.array([e.step for e in events], dtype=np.int64)
+    vals  = np.array([e.value for e in events], dtype=np.float64)
+
+    # Moving-average window: 5% of total training iterations (in steps)
+    win_steps = max(1, int(round(train_iters * win_frac)))
+    half = win_steps // 2
+
+    out = {}
+    for frac in range(1, n_points + 1):
+        # Target step for 10%, 20%, …, 100% of training
+        target = int(round(train_iters * frac / n_points))
+
+        # Window centered at target: [target - half, target + half]
+        lo, hi = target - half, target + half
+        mask = (steps >= lo) & (steps <= hi)
+
+        if mask.any():
+            out[f"rew_{frac*10}pct"] = float(np.nanmean(vals[mask]))
+        else:
+            # Fallback: nearest logged step
+            idx = int(np.argmin(np.abs(steps - target)))
+            out[f"rew_{frac*10}pct"] = float(vals[idx])
+
+    return out
+
 
 # Ray parallelization (if parallel)
 if USE_PARALLEL:
@@ -296,7 +351,9 @@ class FitnessDB:
             "minimal_p",           # (new)
             "vel_v","vel_E","vel_P",
             "eff_v","eff_E","eff_P",
-            "prog_v","prog_E","prog_P"]
+            "prog_v","prog_E","prog_P",
+            "rew_10pct","rew_20pct","rew_30pct","rew_40pct","rew_50pct",
+            "rew_60pct","rew_70pct","rew_80pct","rew_90pct","rew_100pct",]
         return pd.DataFrame([{c: np.nan for c in cols}])
 
     def get_row(self, chromo):

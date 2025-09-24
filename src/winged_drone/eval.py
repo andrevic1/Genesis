@@ -21,6 +21,7 @@ from matplotlib.patches import Patch
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from tensorboard.backend.event_processing import event_accumulator
+from matplotlib.collections import LineCollection
 
 SUCCESS_TIME = 200.0  # tempo minimo per considerare un env come "successo"
 # ──────────────────────────────────────────────────────────────
@@ -945,7 +946,7 @@ def total_plot_points_instead_of_ma(
         ax2.scatter([v_c], [eff_c], s=op_marker_size, c=["tab:red"],
                     edgecolors="none", zorder=12)
 
-    ax2.set_ylim(5, 16)
+    ax2.set_ylim(3, 15)
     ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
     ax2.set_ylabel("Cost of Transport [J/m]")
     ax2.grid(alpha=0.25)
@@ -955,103 +956,6 @@ def total_plot_points_instead_of_ma(
     plt.savefig(out, dpi=150)
     plt.close(fig)
     print(f"✅  total_plot_points_instead_of_ma salvato in {out}")
-
-
-def total_plot_progress_only_point(
-    v_mean, E_tot, v_cmd, progress,
-    *, win_frac=0.03,
-    percentage=0.10,
-    minimal_p=None,
-    custom_point=None,   # (v, p, eff) — come in total_plot
-    out="total_plot_progress_only_point.png"
-):
-    """
-    Stesso layout (2×1, sharex, limiti, griglia, font, posizioni legenda) di total_plot,
-    ma disegna SOLO:
-      • progress only operational point (verde) nei due subplot,
-      • le sue linee tratteggiate verso gli assi (orizzontali + verticali condivise),
-      • la 'minimal progress threshold' (hline grigia nel subplot del progress).
-
-    Nessuna curva MA, niente bande, niente picchi BLU.
-    """
-    import numpy as np
-    import matplotlib.pyplot as plt
-
-    # --- parse punto custom (come total_plot) ------------------------------
-    def _coerce_custom_point(cp):
-        if cp is None: return (np.nan, np.nan, np.nan)
-        if isinstance(cp, dict):
-            return (float(cp.get("v", np.nan)),
-                    float(cp.get("p", np.nan)),
-                    float(cp.get("eff", np.nan)))
-        if isinstance(cp, (tuple, list)) and len(cp) == 3:
-            return tuple(map(float, cp))
-        raise ValueError("custom_point deve essere (v, p, eff) o dict con chiavi v,p,eff")
-
-    v_c, p_c, eff_c = _coerce_custom_point(custom_point)
-
-    # --- calcolo minimal_p coerente a total_plot ---------------------------
-    mask = np.isfinite(v_mean) & np.isfinite(E_tot) & np.isfinite(progress)
-    x = np.asarray(v_mean)[mask]
-    E = np.asarray(E_tot)[mask]
-    P = np.asarray(progress)[mask]
-
-    # usa la stessa logica del total_plot per derivare minimal_p, ma non si plottano le MA
-    x_ma, p_ma, _ = _moving_avg(x, P, win_frac)
-    max_p = float(np.nanmax(p_ma)) if len(p_ma) else np.nan
-    if minimal_p is None and np.isfinite(max_p):
-        minimal_p = max_p * (1.0 - float(percentage))
-
-    # --- figura identica per frame/limiti/griglie/legende ------------------
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.2, 7.6), sharex=True,
-                                   gridspec_kw=dict(hspace=0.10))
-    ax2.set_xlim(5, 25)
-    xmin, xmax = ax2.get_xlim()
-
-    Z_LINE, Z_MARK = 6, 10
-
-    # =======================
-    #   SUBPLOT 1 — PROGRESS
-    # =======================
-    if np.isfinite(v_c) and np.isfinite(p_c):
-        ax1.plot(v_c, p_c, "o", ms=6, color="tab:red",
-                 label="progress only -- Operational Point", zorder=Z_MARK)
-        ax1.plot([xmin, v_c], [p_c, p_c], ls="--", lw=1.4, color="tab:red",
-                 label="progress only -- Fitness", zorder=Z_LINE)
-        ax1.plot([xmin], [p_c], marker="*", ms=11, color="tab:red",
-                 zorder=Z_MARK, clip_on=False)
-        ax1.axvline(v_c, ls="--", lw=1.4, color="tab:red", zorder=Z_LINE)
-
-    if np.isfinite(minimal_p):
-        ax1.axhline(minimal_p, ls="--", lw=1.4, color="tab:gray",
-                    label="minimal progress threshold", zorder=Z_LINE)
-
-    ax1.set_ylim(0, 600)
-    ax1.set_ylabel("Progress [m]")
-    ax1.grid(alpha=0.25)
-    ax1.legend(fontsize=9, loc="best")
-
-    # ==========================
-    #   SUBPLOT 2 — ENERGIA/met
-    # ==========================
-    if np.isfinite(v_c) and np.isfinite(eff_c):
-        ax2.plot(v_c, eff_c, "o", ms=6, color="tab:red", zorder=Z_MARK)
-        ax2.plot([xmin, v_c], [eff_c, eff_c], ls="--", lw=1.4, color="tab:red", zorder=Z_LINE)
-        ax2.plot([xmin], [eff_c], marker="*", ms=11, color="tab:red", zorder=Z_MARK, clip_on=False)
-        ax2.axvline(v_c, ls="--", lw=1.4, color="tab:red", zorder=Z_LINE)
-        # stellina sull'asse X in basso, stessa estetica del total_plot
-        ax2.plot([v_c], [3.0], marker="*", ms=11, color="tab:red", zorder=Z_MARK, clip_on=False)
-
-    ax2.set_ylim(5, 16)
-    ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
-    ax2.set_ylabel("Cost of Transport [J/m]")
-    ax2.grid(alpha=0.25)
-    ax2.legend(fontsize=9, loc="best")
-
-    plt.tight_layout()
-    plt.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"✅  total_plot_progress_only_point salvato in {out}")
 
 
 def total_plot(
@@ -1080,7 +984,7 @@ def total_plot(
           + verticale condivisa (stellina su asse X in basso, sopra l’asse)
         - **min energy** calcolato SOLO dove progress_MA > minimal_p:
           orizzontale BLU → asse Y (quadratino, sopra l’asse)
-        - ylim energia fissato a [0, 9]
+        - ylim energia fissato a [3, 15]
     """
     # --- util: parser tripla custom
     def _coerce_custom_point(cp):
@@ -1094,16 +998,27 @@ def total_plot(
         raise ValueError("custom_point deve essere (v, p, eff) o dict con chiavi v,p,eff")
 
     # --- filtra dati validi
-    mask = np.isfinite(v_mean) & np.isfinite(E_tot) & np.isfinite(progress)
-    x = np.asarray(v_mean)[mask]
-    E = np.asarray(E_tot)[mask]      # Energia per metro
+    mask = np.isfinite(v_cmd) & np.isfinite(v_mean) & np.isfinite(E_tot) & np.isfinite(progress)
+    x = np.asarray(v_cmd)[mask]        # riferimento della finestra (v_cmd)
+    v = np.asarray(v_mean)[mask]       # velocità ottenuta (asse x della curva nera, smussata)
+    E = np.asarray(E_tot)[mask]        # Energia per metro
     P = np.asarray(progress)[mask]
 
-    # --- curve MA (stesso x ordinato per entrambe)
-    x_ma, p_ma, p_std = _moving_avg(x, P, win_frac)
-    _,    E_ma, E_std = _moving_avg(x, E, win_frac)
+    # --- curve MA rispetto a v_cmd
+    #     x_ref (ritornato) è l'ascissa ordinata su v_cmd, ma per il PLOT useremo:
+    #     - x_line = v_ma (media mobile di v_mean su v_cmd)
+    #     - y_line = p_ma (progress mediato su v_cmd)  /  E_ma (energia mediata su v_cmd)
+    x_ref_for_v, v_ma, v_std = _moving_avg(x, v, win_frac)   # x della curva nera
+    x_ref_for_p, p_ma, p_std = _moving_avg(x, P, win_frac)   # y (progress) mediata su v_cmd
+    x_ref_for_E, E_ma, E_std = _moving_avg(x, E, win_frac)   # y (energia) mediata su v_cmd
 
-    # --- soglia minimal_p e intervalli da oscurare
+    # Coerenza: le tre chiamate usano stesso ordinamento/finestra → lunghezze compatibili
+    x_line = v_ma  # ← asse x della curva nera: MA(v_mean | v_cmd)
+    # valori per colorare i segmenti: v_cmd associato a ciascun punto MA
+    c_line = x_ref_for_v  # stesso allineamento di v_ma/p_ma/E_ma
+    cmap = plt.get_cmap("viridis")
+    norm = plt.Normalize(vmin=np.nanmin(x), vmax=np.nanmax(x))  # x = v_cmd filtrato
+    # --- soglia minimal_p e intervalli da oscurare (usano x_line come ascissa)
     max_p = float(np.nanmax(p_ma)) if len(p_ma) else np.nan
     if minimal_p is None and np.isfinite(max_p):
         minimal_p = max_p * (1.0 - float(percentage))
@@ -1124,42 +1039,42 @@ def total_plot(
                 i += 1
         return out
 
-    intervals = _find_intervals_below(x_ma, p_ma, minimal_p) if np.isfinite(minimal_p) else []
+    intervals = _find_intervals_below(x_line, p_ma, minimal_p) if np.isfinite(minimal_p) else []
 
-    # --- picchi BLU
-    # max progress (orizzontale blu nel subplot progress)
+    # --- picchi BLU (usano x_line come ascissa della MA)
+    # max progress
     idx_p = int(np.nanargmax(p_ma)) if len(p_ma) else None
-    x_at_pmax = float(x_ma[idx_p]) if idx_p is not None else None
-    y_pmax    = float(p_ma[idx_p]) if idx_p is not None else None
+    x_at_pmax = float(x_line[idx_p]) if idx_p is not None else None
+    y_pmax    = float(p_ma[idx_p])   if idx_p is not None else None
 
-    # max velocity nella zona con progress > minimal_p
+    # max velocity (tra punti con progress > minimal_p), in termini di x_line
     x_maxvel_zone = None
     y_at_xmax_zone = None
     if np.isfinite(minimal_p):
         ok = p_ma > minimal_p
         if np.any(ok):
-            x_candidates = x_ma[ok]
+            x_candidates = x_line[ok]
             y_candidates = p_ma[ok]
             idx_loc = int(np.argmax(x_candidates))
             x_maxvel_zone = float(x_candidates[idx_loc])
             y_at_xmax_zone = float(y_candidates[idx_loc])
 
-    # **min energy solo dove progress_MA > minimal_p**
+    # **min energy** calcolato SOLO dove progress_MA > minimal_p
     x_at_emin = None
     y_emin    = None
     if np.isfinite(minimal_p):
         okE = p_ma > minimal_p
         if np.any(okE):
             Emin_segment = E_ma[okE]
-            x_segment    = x_ma[okE]
+            x_segment    = x_line[okE]
             j = int(np.nanargmin(Emin_segment))
             y_emin = float(Emin_segment[j])
             x_at_emin = float(x_segment[j])
-    # fallback (se soglia non valida/nessun punto sopra soglia)
+    # fallback
     if x_at_emin is None or not np.isfinite(x_at_emin):
         if len(E_ma):
             j = int(np.nanargmin(E_ma))
-            x_at_emin = float(x_ma[j])
+            x_at_emin = float(x_line[j])
             y_emin    = float(E_ma[j])
 
     # --- custom point (v,p,eff=energia per metro)
@@ -1186,24 +1101,41 @@ def total_plot(
     if np.isfinite(v_c) and np.isfinite(p_c):
         ax1.plot(v_c, p_c, "o", ms=6, color="tab:red", label="progress only -- Operational Point",
                  zorder=Z_MARK)
-        # orizzontale verso asse Y (stellina)
         ax1.plot([xmin, v_c], [p_c, p_c], ls="--", lw=1.4, color="tab:red", label="progress only -- Fitness",
                  zorder=Z_LINE)
         ax1.plot([xmin], [p_c], marker="*", ms=11, color="tab:red",
                  zorder=Z_MARK, clip_on=False)
-        # verticale condivisa
         ax1.axvline(v_c, ls="--", lw=1.4, color="tab:red",
                     zorder=Z_LINE)
 
-    ax1.plot(x_ma, p_ma, color="black", lw=2.2, label="velocity tracking -- Moving Average")
-    ax1.fill_between(x_ma, p_ma - p_std, p_ma + p_std, color="purple", label="±1 σ",
-                    alpha=0.1)
+    # linea nera: x = MA(v_mean|v_cmd), y = MA(progress|v_cmd)
+    # Curva MA colorata per v_cmd
+    pts1 = np.array([x_line, p_ma]).T.reshape(-1, 1, 2)
+    segs1 = np.concatenate([pts1[:-1], pts1[1:]], axis=1)
+    lc1 = LineCollection(segs1, cmap=cmap, norm=norm)
+    lc1.set_array(0.5*(c_line[:-1] + c_line[1:]))  # colore = media v_cmd del segmento
+    lc1.set_linewidth(2.2)
+    lc1.set_zorder(6)  # come Z_LINE
+    ax1.add_collection(lc1)
+
+    # (opzionale) tenere una voce di legenda per la curva
+    from matplotlib.lines import Line2D
+    _proxy1 = Line2D([0],[0], color="black", lw=2.2, label="Moving Average (colored by v_cmd)")
+    h1,l1 = ax1.get_legend_handles_labels()
+    h1.append(_proxy1); ax1.legend(handles=h1, fontsize=9, loc="best")
+
+    # Colorbar per v_cmd
+    cb1 = plt.colorbar(lc1, ax=ax1, pad=0.01)
+    cb1.set_label("Commanded Velocity [m/s]")
+
+    ax1.fill_between(x_line, p_ma - p_std, p_ma + p_std, color="purple", label="±1 σ",
+                     alpha=0.1)
 
     for a, b in intervals:
         ax1.axvspan(a, b, color="gray", alpha=0.30, lw=0)
 
-    # orizzontale BLU dal max progress → asse Y (quadratino sopra l'asse)
-    if y_pmax is not None and np.isfinite(y_pmax):
+    # orizzontale BLU dal max progress → asse Y
+    if np.isfinite(y_pmax):
         ax1.plot([xmin, x_at_pmax], [y_pmax, y_pmax], ls="--", lw=1.4,
                  color="tab:blue", zorder=Z_LINE, label="velocity tracking -- Fitness")
         ax1.plot([xmin], [y_pmax], marker="s", ms=9, color="tab:blue",
@@ -1216,18 +1148,11 @@ def total_plot(
     # verticale BLU max velocity (zona ammessa) — continua nel 2° subplot
     if x_maxvel_zone is not None and np.isfinite(y_at_xmax_zone):
         ax1.axvline(x_maxvel_zone, ls="--", lw=1.4, color="tab:blue",
-                    zorder=Z_LINE)  # niente label: la regione è rappresentata dal rettangolo grigio in legenda
+                    zorder=Z_LINE)
 
-
-    # custom point VERDE + linee + stelline (sopra assi)
-
-
-    # assi Y da 0
-    y1min, y1max = ax1.get_ylim()
     ax1.set_ylim(0, 600)
     ax1.set_ylabel("Progress [m]")
     ax1.grid(alpha=0.25)
-    # aggiungi rettangolino grigio alla legenda per indicare la regione
     _handles1, _labels1 = ax1.get_legend_handles_labels()
     _handles1.append(Patch(facecolor="gray", alpha=0.30, label="NOT admissible region"))
     ax1.legend(handles=_handles1, fontsize=9, loc="best")
@@ -1235,15 +1160,26 @@ def total_plot(
     # ==========================
     #   SUBPLOT 2 — ENERGIA/met
     # ==========================
-    ax2.plot(x_ma, E_ma, color="black", lw=2.2)
-    ax2.fill_between(x_ma, E_ma - E_std, E_ma + E_std, color="purple",
-                    alpha=0.1)
+    # linea nera: x = MA(v_mean|v_cmd) (stessa x_line), y = MA(E|v_cmd)
+    pts2 = np.array([x_line, E_ma]).T.reshape(-1, 1, 2)
+    segs2 = np.concatenate([pts2[:-1], pts2[1:]], axis=1)
+    lc2 = LineCollection(segs2, cmap=cmap, norm=norm)
+    lc2.set_array(0.5*(c_line[:-1] + c_line[1:]))
+    lc2.set_linewidth(2.2)
+    lc2.set_zorder(6)
+    ax2.add_collection(lc2)
+
+    cb2 = plt.colorbar(lc2, ax=ax2, pad=0.01)
+    cb2.set_label("Commanded Velocity [m/s]")
+
+    ax2.fill_between(x_line, E_ma - E_std, E_ma + E_std, color="purple",
+                     alpha=0.1)
 
     for a, b in intervals:
         ax2.axvspan(a, b, color="gray", alpha=0.30, lw=0)
 
     # orizzontale BLU dal min energy (solo zona > minimal_p) → asse Y
-    if y_emin is not None and np.isfinite(y_emin):
+    if np.isfinite(y_emin):
         ax2.plot([xmin, x_at_emin], [y_emin, y_emin], ls="--", lw=1.4,
                  color="tab:blue", zorder=Z_LINE)
         ax2.plot([xmin], [y_emin], marker="s", ms=9, color="tab:blue",
@@ -1260,20 +1196,16 @@ def total_plot(
     if np.isfinite(v_c) and np.isfinite(eff_c):
         ax2.plot(v_c, eff_c, "o", ms=6, color="tab:red",
                  zorder=Z_MARK)
-        # orizzontale verso asse Y (stellina)
         ax2.plot([xmin, v_c], [eff_c, eff_c], ls="--", lw=1.4, color="tab:red",
                  zorder=Z_LINE)
         ax2.plot([xmin], [eff_c], marker="*", ms=11, color="tab:red",
                  zorder=Z_MARK, clip_on=False)
-        # verticale condivisa + stellina su asse X in basso
         ax2.axvline(v_c, ls="--", lw=1.4, color="tab:red",
                     zorder=Z_LINE)
         ax2.plot([v_c], [3.0], marker="*", ms=11, color="tab:red",
                  zorder=Z_MARK, clip_on=False)
 
-    # assi Y: energia 0..9 fisso
-    ax2.set_ylim(5, 16)
-
+    ax2.set_ylim(3, 15)
     ax2.set_xlabel("Mean Velocity x̄ along progress direction [m/s]")
     ax2.set_ylabel("Cost of Transport [J/m]")
     ax2.grid(alpha=0.25)
@@ -1284,196 +1216,7 @@ def total_plot(
     plt.close(fig)
     print(f"✅  total_plot salvato in {out}")
 
-def total_plot_efficiency(
-    v_mean, E_tot, v_cmd, progress,
-    *, win_frac=0.03,
-    percentage=0.10,           # usato solo se minimal_p è None
-    minimal_p=None,            # soglia assoluta; se None → max_p*(1-percentage)
-    custom_point=None,         # (v, p, eff)  — eff = Energia per metro (J/m) ⇢ verrà invertito
-    out="total_plot_efficiency.png"
-):
-    """
-    Come total_plot, ma nel [2] mostra l'inverso dell'energia per metro:
-    meters per Joule [m/J]. La linea BLU indica il punto con m/J massimo
-    nella 'admissible region' (progress_MA > minimal_p).
-    """
-    import numpy as np
-    import matplotlib.pyplot as plt
 
-    # --- util: parser tripla custom
-    def _coerce_custom_point(cp):
-        if cp is None: return None
-        if isinstance(cp, dict):
-            return (float(cp.get("v", np.nan)),
-                    float(cp.get("p", np.nan)),
-                    float(cp.get("eff", np.nan)))
-        if isinstance(cp, (tuple, list)) and len(cp) == 3:
-            return tuple(map(float, cp))
-        raise ValueError("custom_point deve essere (v, p, eff) o dict con chiavi v,p,eff")
-
-    # --- filtra dati validi
-    mask = np.isfinite(v_mean) & np.isfinite(E_tot) & np.isfinite(progress)
-    x = np.asarray(v_mean)[mask]
-    E = np.asarray(E_tot)[mask]      # Energia per metro [J/m]
-    P = np.asarray(progress)[mask]
-
-    # --- curve MA (stesso x ordinato per entrambe)
-    x_ma, p_ma, p_std = _moving_avg(x, P, win_frac)
-    _,    E_ma, E_std = _moving_avg(x, E, win_frac)
-
-    # --- soglia minimal_p e intervalli da oscurare (stessa logica dell’originale)
-    max_p = float(np.nanmax(p_ma)) if len(p_ma) else np.nan
-    if minimal_p is None and np.isfinite(max_p):
-        minimal_p = max_p * (1.0 - float(percentage))
-
-    def _find_intervals_below(xv, yv, thr):
-        if len(xv) == 0 or not np.isfinite(thr): return []
-        below = yv < thr
-        if not np.any(below): return []
-        out, i, n = [], 0, len(xv)
-        while i < n:
-            if below[i]:
-                xs, j = xv[i], i
-                while j + 1 < n and below[j + 1]:
-                    j += 1
-                out.append((float(xs), float(xv[j])))
-                i = j + 1
-            else:
-                i += 1
-        return out
-
-    intervals = _find_intervals_below(x_ma, p_ma, minimal_p) if np.isfinite(minimal_p) else []
-
-    # --- picchi su progress (come original)
-    idx_p = int(np.nanargmax(p_ma)) if len(p_ma) else None
-    x_at_pmax = float(x_ma[idx_p]) if idx_p is not None else None
-    y_pmax    = float(p_ma[idx_p]) if idx_p is not None else None
-
-    # --- punto di massima efficienza nella zona ammessa:
-    #     min(E) ⇢ max(η), con η = 1/E
-    x_at_eta_max = None
-    eta_max      = None
-    if np.isfinite(minimal_p):
-        ok = p_ma > minimal_p
-        if np.any(ok):
-            E_seg = E_ma[ok]
-            x_seg = x_ma[ok]
-            j = int(np.nanargmin(E_seg))
-            Emin = float(E_seg[j])
-            x_at_eta_max = float(x_seg[j])
-            if np.isfinite(Emin) and Emin > 0:
-                eta_max = 1.0 / Emin
-    # fallback se non c’è zona ammessa
-    if (x_at_eta_max is None or eta_max is None) and len(E_ma):
-        j = int(np.nanargmin(E_ma))
-        Emin = float(E_ma[j])
-        x_at_eta_max = float(x_ma[j])
-        eta_max = 1.0 / max(Emin, 1e-9)
-
-    # --- custom point (v,p,eff=J/m) → eff_inv per il 2° subplot
-    v_c = p_c = eff_c = np.nan
-    cp = _coerce_custom_point(custom_point)
-    if cp is not None:
-        v_c, p_c, eff_c = cp
-    eta_c = (1.0 / eff_c) if np.isfinite(eff_c) and eff_c > 0 else np.nan
-
-    # --- figura
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8.2, 7.6), sharex=True,
-                                   gridspec_kw=dict(hspace=0.10))
-    ax2.set_xlim(5, 25)
-    xmin, xmax = ax2.get_xlim()
-
-    Z_LINE, Z_MARK = 6, 10
-
-    # =======================
-    #   SUBPLOT 1 — PROGRESS
-    # =======================
-    ax1.plot(x_ma, p_ma, color="black", lw=2.2, label="velocity tracking RL setting")
-    ax1.fill_between(x_ma, p_ma - p_std, p_ma + p_std, color="red", alpha=0.1)
-    if np.isfinite(minimal_p):
-        ax1.axhline(minimal_p, ls="--", lw=1.4, color="tab:gray", label="minimal progress", zorder=Z_LINE)
-
-    for a, b in intervals:
-        ax1.axvspan(a, b, color="gray", alpha=0.30, lw=0)
-
-    # orizzontale BLU dal max progress → asse Y (quadratino)
-    if y_pmax is not None and np.isfinite(y_pmax):
-        ax1.plot([xmin, x_at_pmax], [y_pmax, y_pmax], ls="--", lw=1.4, color="tab:blue", zorder=Z_LINE, label="velocity tracking -- Fitness")
-        ax1.plot([xmin], [y_pmax], marker="s", ms=9, color="tab:blue", zorder=Z_MARK, clip_on=False)
-
-    # verticale BLU “admissible region” (velocità massima entro la zona ammessa)
-    if np.isfinite(minimal_p):
-        ok = p_ma > minimal_p
-        if np.any(ok):
-            x_candidates = x_ma[ok]
-            y_candidates = p_ma[ok]
-            idx_loc = int(np.argmax(x_candidates))
-            x_maxvel_zone = float(x_candidates[idx_loc])
-            ax1.axvline(x_maxvel_zone, ls="--", lw=1.4, color="tab:blue",
-                        zorder=Z_LINE)
-
-    if np.isfinite(v_c) and np.isfinite(p_c):
-        ax1.plot(v_c, p_c, "o", ms=6, color="tab:green", label="best progress RL setting", zorder=Z_MARK)
-        ax1.plot([xmin, v_c], [p_c, p_c], ls="--", lw=1.4, color="tab:green", zorder=Z_LINE)
-        ax1.plot([xmin], [p_c], marker="*", ms=11, color="tab:green", zorder=Z_MARK, clip_on=False)
-        ax1.axvline(v_c, ls="--", lw=1.4, color="tab:green", zorder=Z_LINE)
-
-    ax1.set_ylim(0, 600)
-    ax1.set_ylabel("Progress — moving avg [m]")
-    ax1.grid(alpha=0.25)
-    # aggiungi rettangolino grigio alla legenda SOLO nel primo subplot
-    _h1, _l1 = ax1.get_legend_handles_labels()
-    _h1.append(Patch(facecolor="gray", alpha=0.30, label="admissible region"))
-    ax1.legend(handles=_h1, fontsize=9, loc="best")
-
-    # ==================================
-    #   SUBPLOT 2 — METERS per JOULE
-    # ==================================
-    # Trasformo MA e banda ±1σ per inversione (stessi 'risultati', solo invertiti)
-    eps = 1e-9
-    E_lo = np.clip(E_ma - E_std, eps, None)
-    E_hi = np.clip(E_ma + E_std, eps, None)
-    eta_ma = 1.0 / np.clip(E_ma, eps, None)     # m/J
-    eta_lo = 1.0 / E_hi                         # banda inferiore in m/J
-    eta_hi = 1.0 / E_lo                         # banda superiore in m/J
-
-    ax2.plot(x_ma, eta_ma, color="black", lw=2.2)
-    ax2.fill_between(x_ma, np.minimum(eta_lo, eta_hi), np.maximum(eta_lo, eta_hi),
-                     color="black", alpha=0.15)
-
-    for a, b in intervals:
-        ax2.axvspan(a, b, color="gray", alpha=0.30, lw=0)
-
-    # BLU: evidenzia il punto di massima efficienza (m/J) nella zona ammessa
-    if (x_at_eta_max is not None) and (eta_max is not None) and np.isfinite(eta_max):
-        ax2.plot([xmin, x_at_eta_max], [eta_max, eta_max], ls="--", lw=1.4, color="tab:blue", zorder=Z_LINE)
-        ax2.plot([xmin], [eta_max], marker="s", ms=9, color="tab:blue", zorder=Z_MARK, clip_on=False)
-        #ax2.axvline(x_at_eta_max, ls="--", lw=1.4, color="tab:blue", zorder=Z_LINE)
-        # quadratino sull'asse X in basso
-        y_min, y_max = ax2.get_ylim()
-        ax2.plot([x_at_eta_max], [y_min], marker="s", ms=9, color="tab:blue", zorder=Z_MARK, clip_on=False)
-
-    # punto custom in efficienza (verde)
-    if np.isfinite(v_c) and np.isfinite(eta_c):
-        ax2.plot(v_c, eta_c, "o", ms=6, color="tab:green", zorder=Z_MARK)
-        ax2.plot([xmin, v_c], [eta_c, eta_c], ls="--", lw=1.4, color="tab:green", zorder=Z_LINE)
-        ax2.plot([xmin], [eta_c], marker="*", ms=11, color="tab:green", zorder=Z_MARK, clip_on=False)
-        ax2.axvline(v_c, ls="--", lw=1.4, color="tab:green", zorder=Z_LINE)
-        y_min, y_max = ax2.get_ylim()
-        ax2.plot([v_c], [y_min], marker="*", ms=11, color="tab:green", zorder=Z_MARK, clip_on=False)
-
-    # limiti Y: inverso dell'intervallo 3..9 J/m → ~0.111..0.333 m/J
-    ax2.set_ylim(1/10.0, 1/4.0)
-
-    ax2.set_xlabel("Mean Velocity x̄ [m/s]")
-    ax2.set_ylabel("Meters per Joule  [m/J]")
-    ax2.grid(alpha=0.25)
-    ax2.legend(fontsize=9, loc="best")
-
-    plt.tight_layout()
-    plt.savefig(out, dpi=150)
-    plt.close(fig)
-    print(f"✅  total_plot_efficiency salvato in {out}")
 
 # ──────────────────────────────────────────────────────────────
 # 4) MAIN
@@ -1484,7 +1227,7 @@ if __name__ == "__main__":
     p.add_argument("--ckpt",  type=int, default=300)
     p.add_argument("--envs",  type=int, default=4096)
     p.add_argument("--vmin",  type=float, default=6.0)
-    p.add_argument("--vmax",  type=float, default=24.0)
+    p.add_argument("--vmax",  type=float, default=28.0)
     p.add_argument("--gpu",   default="cuda")
     args = p.parse_args()
 
@@ -1506,7 +1249,7 @@ if __name__ == "__main__":
         episode_length_s= SUCCESS_TIME,
         x_upper=500,
         tree_radius=0.75,
-        base_init_pos=[-100.0, 0.0, 10.0],
+        base_init_pos=[-50.0, 0.0, 10.0],
     ))
 
     env = WingedDroneEvalLinSpeed(
@@ -1560,7 +1303,7 @@ if __name__ == "__main__":
     E_tot_m, prog_m   = E_tot, progress
 
     # curve smussate
-    win_frac = 0.02
+    win_frac = 0.03
 
     xm_s, p_s,  _  = _moving_avg(v_mean_m, prog_m, win_frac)
     idx_p = np.argmax(p_s)        # progress max
@@ -1659,34 +1402,16 @@ if __name__ == "__main__":
     total_plot(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=350.0,                 # oppure ometti e usa percentage=0.10
+        minimal_p=300.0,                 # oppure ometti e usa percentage=0.10
         #percentage=0.10,
         #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot.png"
     )
 
-    total_plot_efficiency(
-        v_mean, E_tot, v_cmd, progress,
-        win_frac=win_frac,
-        minimal_p=350.0,                 # come nel total_plot per coerenza
-        #percentage=0.10,                # oppure usa la percentuale
-        #custom_point=(14.9, 640.0, 6.5), # stesso punto: qui l’eff verrà mostrata come 1/6.5 m/J
-        out=f"{args.exp_name}_{args.ckpt}_total_plot_efficiency.png"
-    )
-
-    total_plot_progress_only_point(
-        v_mean, E_tot, v_cmd, progress,
-        win_frac=win_frac,
-        minimal_p=350.0,                     # o lascia None e usa percentage
-        # percentage=0.10,
-        #custom_point=(14.9, 640.0, 6.5),     # stesso formato di total_plot
-        out=f"{args.exp_name}_{args.ckpt}_total_plot_progress_only_point.png"
-    )
-
     total_plot_points_instead_of_ma(
         v_mean, E_tot, v_cmd, progress,
         win_frac=win_frac,
-        minimal_p=350.0,                     # o percentage=0.10
+        minimal_p=300.0,                     # o percentage=0.10
         #custom_point=(14.9, 640.0, 6.5),
         out=f"{args.exp_name}_{args.ckpt}_total_plot_points_instead_of_ma.png"
     )

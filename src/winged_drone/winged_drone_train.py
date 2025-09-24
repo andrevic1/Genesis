@@ -132,24 +132,28 @@ def get_cfgs():
     }
     obs_cfg = {
         "num_obs": 29,
-        "obs_scales": {
-            "zpos": 0.01,
-            "lin_vel": 0.1,
-            "ang_vel": 0.2,
-            "depth": 1/60,
+        "add_noise": True,   # or False for evaluation
+        "noise_std": {
+            "z": 0.05,
+            "quat": 0.05,
+            "vel": 0.05,
+            "depth": 0.05,
+            "last_thr": 0.0,
+            "last_jnts": 0.0,
+            "v_tgt": 0.0,
         },
     }
     reward_cfg = {
         "reward_scales": {
             "smooth": -2e-2, # -3e-3,
-            "angular": -1e-2, # -2e-2,
+            "angular": -5e-3, # -2e-2,
             "crash": -40, #-20.0,
-            "obstacle": -1e-1, # -1e-1,
-            "energy": -2e-4,#-1e-3,
+            "obstacle": -5e-2, # -1e-1,
+            "energy": -1e-4,#-1e-3,
             "progress": 3e-1, # 4e-1
-            "height": -1e-2, #-5e-3,
+            "height": -4e-2, #-5e-3,
             "success": 0, #0
-            "cosmetic": -5e-1, # 0.0
+            "cosmetic": -3e-1, # 0.0
         },
     }
     command_cfg = {
@@ -287,7 +291,7 @@ def main():
             print(f"[train] ⚠  checkpoint {ckpt_path} not found – starting from scratch.")
 
     start_lim   = 30      # [deg]
-    final_lim   = 100     # [deg]
+    final_lim   = 120     # [deg]
     warmup_iter = 0 #150    # iterazioni in cui il limite cresce
     block_size  = 30      # finché non satura, si impara a blocchi di 30
     noise_sigma_final = 0.05

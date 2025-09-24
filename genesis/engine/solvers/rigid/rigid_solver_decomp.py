@@ -279,14 +279,14 @@ class RigidSolver(Solver):
     def _const_init(self):
         self._aero_base = dict(
             rho             = 1.225,
-            cl_alpha_2d     = 3*ti.math.pi, #2*ti.math.pi,
-            alpha_stall_deg = 10.0,
-            alpha0_2d       = -0*ti.math.pi/180, #-3.0*ti.math.pi/180,
+            cl_alpha_2d     = 2*ti.math.pi, #2*ti.math.pi,
+            alpha_stall_deg = 14.0,
+            alpha0_2d       = -3*ti.math.pi/180, #-3.0*ti.math.pi/180,
             alpha0_2d_fus   = 0.0,
             cd0             = 0.05,
             cd0_fus         = 0.25,
             m_smooth        = 0.2,
-            max_thrust      = 10.0,
+            max_thrust      = 8.0,
             cp_start        = 0.25,
             cp_end          = 0.50,
             cg_to_chord     = 0.31,

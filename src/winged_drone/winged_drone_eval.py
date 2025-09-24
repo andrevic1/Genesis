@@ -127,19 +127,12 @@ def create_topdown_video_multi(env, trajectories, save_path,
     plt.close(fig)
 
 # 2) OVERLAY  --------------------------------------------------------------
-# ------------------------------------------------------------
-# create_overlay_video – layout in 3 fasce
-# ------------------------------------------------------------
-# ------------------------------------------------------------
-# Overlay (video‑camera + 4 plot + video top‑down a tutta larghezza)
-# ------------------------------------------------------------
-# ------------------------------------------------------------
-# Overlay (video‑camera + 5 plot + video top‑down a tutta larghezza)
-# ------------------------------------------------------------
+
 def create_overlay_video(cam_mp4: str,
                          td_mp4 : str,
                          traj    : dict,
                          out_mp4 : str = "camera_overlay.mp4",
+                         v_commanded: float = 12.0,
                          dpi: int = 240):
     """
     • SINISTRA : video‑camera
@@ -192,14 +185,14 @@ def create_overlay_video(cam_mp4: str,
     for ax in (ax_J01, ax_J23, ax_J45):
         ax.set_ylim(-0.3, 0.3)
 
-    ax_VLIN.set_ylim(-2, 20)
+    ax_VLIN.set_ylim(-2, v_commanded + 3)
     ax_VLIN.grid(True, lw=.3, alpha=.4)
     ax_VLIN.set_xlabel("t [s]")
     for ax in ts_axes:
         ax.grid(True, lw=.3, alpha=.4)
 
     # make vel commanded an array with same lenght of the others and always 13
-    vel_commanded = np.full_like(t_all, 12.0, dtype=np.float32)
+    vel_commanded = np.full_like(t_all, v_commanded, dtype=np.float32)
 
     # ---------- linee + legende ------------------------------------------
     lnT , = ax_T   .plot([], [], c="tab:orange", lw=2.0, label="Σ thr")
@@ -422,14 +415,15 @@ if __name__ == "__main__":
     rew_cfg["reward_scales"] = {}
 
     env_cfg.update(dict(
-    visualize_camera=True,
+    visualize_camera=False,
     visualize_target=False,
     max_visualize_FPS=15,
     unique_forests_eval=False,
     growing_forest=args.growing_forest,
     episode_length_s= SUCCESS_TIME_SEC,
-    x_upper=1000,
+    x_upper=500,
     tree_radius=0.75,
+    base_init_pos=[-100, 0, 10.0],
     ))
 
 
@@ -486,15 +480,28 @@ if __name__ == "__main__":
                 cam_mp4 = args.video_cam,
                 td_mp4  = args.video,
                 traj    = trajectories[0],
+                v_commanded = env1.commands[0,2].cpu().item(),
                 out_mp4 = "camera_overlay.mp4"
             )
             print("✅  Video finale con HUD in camera_overlay.mp4")
 
     print(f"\n>>> Computing statistics on {args.stats_envs} envs")
-    env_cfg_stats = {**env_cfg, **{"unique_forests_eval": True}}
+    
+    env_cfg.update(dict(
+    visualize_camera=False,
+    visualize_target=False,
+    max_visualize_FPS=15,
+    unique_forests_eval=True,
+    growing_forest=args.growing_forest,
+    episode_length_s= SUCCESS_TIME_SEC,
+    x_upper=500,
+    tree_radius=0.75,
+    base_init_pos=[-100, 0, 10.0],
+    ))
+
     env2 = WingedDroneEnv(
         num_envs=args.stats_envs,
-        env_cfg=env_cfg_stats,
+        env_cfg=env_cfg,
         obs_cfg=obs_cfg, reward_cfg=rew_cfg,
         command_cfg=cmd_cfg,
         show_viewer=False, eval=True

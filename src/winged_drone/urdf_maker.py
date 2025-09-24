@@ -90,7 +90,7 @@ class UrdfMaker:
 
     # “Mass model” densities (kg/m³) and constants
     _RHO_FUS_STRUCT  = 20.0
-    _FUS_FIXED_MASS  = 0.300              # e.g. battery, avionics
+    _FUS_FIXED_MASS  = 0.250              # e.g. battery, avionics
     _BATTERY_SIZE    = (0.10, 0.05, 0.05) # box for inertia (10×5×5 cm)
     _RHO_WING = 20
     _RHO_ELEV = 20
@@ -106,7 +106,7 @@ class UrdfMaker:
     _SHRINK  = 0.25
 
     # Root offsets and fixed RPYs (legacy values kept)
-    _MASS_INTER     = 0.1
+    _MASS_INTER     = 0.0
     _ROOT_Y_OFFSET  = 0.05
 
     _RPY_FUSE_COLL  = "-1.5898372930676048 6.123233995736766e-17 -1.5707963267948968"
@@ -116,7 +116,14 @@ class UrdfMaker:
 
     _REV_LIMIT = {"lower": "-0.35", "upper": "0.35", "effort": "1.5", "velocity": "3.665191429"}
     _REV_DYN   = {"damping": "0.2", "friction": "0.05"}
-    _LE_REF    = 0.14  # historical LE shift used by legacy meshes
+    _LE_REF    = 0.25  # historical LE shift used by legacy meshes
+
+    # Servo masses (kg) e dimensioni box (m) per inerzia
+    _SERVO_WING_SWEEP_MASS = 0.040   # servo sweep ala (per lato)
+    _SERVO_WING_TWIST_MASS = 0.030   # servo twist ala (per lato)
+    _SERVO_TAIL_ELEV_MASS  = 0.02   # servo elevatore
+    _SERVO_TAIL_RUDD_MASS  = 0.02   # servo timone
+    _SERVO_SIZE            = (0.03, 0.012, 0.03)  # (sx, sy, sz) ~ 30×12×30 mm
 
     # ────────────────────────────────────────────────────────────────────
     # Construction
@@ -146,7 +153,7 @@ class UrdfMaker:
             wing_chord     = wing_span / max(wing_AR, 1e-6)
             elevator_chord = elev_span / max(elev_AR, 1e-6)
             rudder_chord   = rudd_span / max(rudd_AR, 1e-6)
-            fus_cg_x       = - cg_ratio    * fus_length
+            fus_cg_x       = cg_ratio    * fus_length
             wing_attach_x  = attach_ratio * fus_length
             density_scale  = 1.0
             prop_radius    = 0.10
@@ -267,6 +274,36 @@ class UrdfMaker:
 
     def _root_link(self, robot: ET.Element) -> None:
         self._add_inertial(ET.SubElement(robot, "link", name="root_link"), (0, 0, 0), 0, (0, 0, 0))
+
+    def _add_fixed_mass(self, robot: ET.Element, *,
+                        name: str, parent: str, xyz, rpy: str = "0 0 0",
+                        m: float,
+                        size: Tuple[float, float, float] | None = None,
+                        sphere_radius: float = 0.015):
+        """
+        Crea un link con massa m fissato al parent.
+        Se 'size' è dato -> inerzia box; altrimenti -> inerzia sferica con raggio 'sphere_radius'.
+        """
+        if m <= 0:
+            I = (0.0, 0.0, 0.0)
+        else:
+            if size is not None:
+                sx, sy, sz = size
+                I = self._I_box(m, sx, sy, sz, fudge=1.0)
+            else:
+                r = sphere_radius
+                Ixx = Iyy = Izz = (2.0/5.0) * m * (r*r)  # sfera piena
+                I = (Ixx, Iyy, Izz)
+
+        ln = ET.SubElement(robot, "link", name=name)
+        self._add_inertial(ln, (0, 0, 0), m, I)
+
+        j = ET.SubElement(robot, "joint", name=f"fixed_joint_{name}", type="fixed")
+        ET.SubElement(j, "parent", link=parent)
+        ET.SubElement(j, "child",  link=name)
+        self._origin(j, xyz, rpy)
+
+
 
     # ────────────────────────────────────────────────────────────────────
     # Fuselage
@@ -391,8 +428,8 @@ class UrdfMaker:
             # limits scale with sweep/twist multipliers (kept compatible)
             limit_sweep  = 0.7 / max(self.p.sweep_multi, 0.5)   # [rad]
             limit_twist  = 0.7 / max(self.p.twist_multi, 0.5)   # [rad]
-            effort_sweep = 1.2 * max(self.p.sweep_multi, 0.5)
-            effort_twist = 0.6 * max(self.p.twist_multi, 0.5)
+            effort_sweep = 1.0 * max(self.p.sweep_multi, 0.5)
+            effort_twist = 0.5 * max(self.p.twist_multi, 0.5)
 
             # attach the side "root" to fuselage with dihedral
             fj = ET.SubElement(robot, "joint", name=f"fixed_joint_{side}_wing", type="fixed")
@@ -415,6 +452,15 @@ class UrdfMaker:
                           effort=f"{effort_sweep:.6g}", velocity=self._REV_LIMIT["velocity"])
             ET.SubElement(js, "dynamics", **self._REV_DYN)
 
+            self._add_fixed_mass(robot,
+                name=f"{side}_wing_servo_sweep",
+                parent=f"fuselage_{side}_0",
+                xyz=(0, 0, 0),
+                m=self._SERVO_WING_SWEEP_MASS,
+                size=None,                 # niente box
+                sphere_radius=0.015        # ~15 mm
+            )
+
             # 2) TWIST joint: fus1 → {side}_wing
             jt = ET.SubElement(robot, "joint", name=f"joint_1_twist_{side}_wing", type="revolute")
             ET.SubElement(jt, "parent", link=f"fuselage_{side}_1")
@@ -425,6 +471,16 @@ class UrdfMaker:
                           lower=f"{-limit_twist:.6g}", upper=f"{limit_twist:.6g}",
                           effort=f"{effort_twist:.6g}", velocity=self._REV_LIMIT["velocity"])
             ET.SubElement(jt, "dynamics", **self._REV_DYN)
+
+            self._add_fixed_mass(robot,
+                name=f"{side}_wing_servo_twist",
+                parent=f"fuselage_{side}_1",
+                xyz=(0, -self._ROOT_Y_OFFSET*sgn, 0),
+                m=self._SERVO_WING_TWIST_MASS,
+                size=None,
+                sphere_radius=0.015
+            )
+
 
             # Root link for the side (visual is the whole half-wing mesh)
             root = ET.SubElement(robot, "link", name=f"{side}_wing")
@@ -465,8 +521,17 @@ class UrdfMaker:
         ET.SubElement(jh, "child",  link="elevator_hinge")
         self._origin(jh, (- p.fus_length - 0.03, 0, 0))
         ET.SubElement(jh, "axis", xyz="0 1 0")
-        ET.SubElement(jh, "limit", lower="-0.35", upper="0.35", effort="1.0", velocity="3.665191429")
+        ET.SubElement(jh, "limit", lower="-0.35", upper="0.35", effort="0.5", velocity="3.665191429")
         ET.SubElement(jh, "dynamics", damping="0.2", friction="0.05")
+
+        # Servo elevatore
+        self._add_fixed_mass(robot,
+            name="elevator_servo",
+            parent="fuselage",
+            xyz=(-p.fus_length - 0.03, 0, 0),
+            m=self._SERVO_TAIL_ELEV_MASS,
+            size=None
+        )
 
         ln_hinge = ET.SubElement(robot, "link", name="elevator_hinge")
         self._add_inertial(ln_hinge, (0, 0, 0), 0, (0, 0, 0))
@@ -515,8 +580,18 @@ class UrdfMaker:
         ET.SubElement(jy, "child",  link="rudder")
         self._origin(jy, (0, 0, 0))
         ET.SubElement(jy, "axis", xyz="0 0 1")
-        ET.SubElement(jy, "limit", lower="-0.35", upper="0.35", effort="1.0", velocity="3.665191429")
+        ET.SubElement(jy, "limit", lower="-0.35", upper="0.35", effort="0.5", velocity="3.665191429")
         ET.SubElement(jy, "dynamics", damping="0.2", friction="0.05")
+
+        # Servo timone
+        self._add_fixed_mass(robot,
+            name="rudder_servo",
+            parent="elevator_hinge",
+            xyz=(0, 0, 0),
+            m=self._SERVO_TAIL_RUDD_MASS,
+            size=None
+        )
+
 
         ln = ET.SubElement(robot, "link", name="rudder")
         self._add_inertial(ln, (-self._CG_RATIO * c, 0, -0.08), m, I)
@@ -587,7 +662,7 @@ if __name__ == "__main__":
         0.18, 1.3,     # elevator span, AR -> chord ≈ 0.138
         0.16, 1.3,     # rudder   span, AR -> chord ≈ 0.123
         0.0,           # dihedral [deg]
-        0.14,          # hinge_le_ratio
+        0.25,          # hinge_le_ratio
         2.0, 2.5,      # sweep, twist multipliers
         2*math.pi, -3.0 # cl_alpha_2d, alpha0_2d [deg]
     ]

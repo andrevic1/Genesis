@@ -21,7 +21,7 @@ class WingedDroneEnv:
 
     BASE_OBS_SIZE = 8          # z-pos(1)+quat(4)+lin_vel_norm(1)
     THROTTLE_SIZE = 1
-    MAX_DISTANCE = 60.0
+    MAX_DISTANCE = 40.0
     SHORT_RANGE = 0.0
     NUM_SECTORS_ACTOR  = 20      # 80 deg
     CONE_ACTOR_DEG     = 80.0
@@ -52,7 +52,6 @@ class WingedDroneEnv:
         self.reward_cfg = reward_cfg
         self.command_cfg = command_cfg
 
-        self.obs_scales = obs_cfg["obs_scales"]
         self.reward_scales = reward_cfg["reward_scales"]
 
         CONTROL_HZ  = 25  # azioni alla PPO
@@ -147,7 +146,7 @@ class WingedDroneEnv:
 
         if self.drone_name == "morphing_drone":
             if urdf_file == None:
-                urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.7, 0.2, -0.275, -0.275, 0.73, 0.18, 0.14, 0.16, 0.12, 1, 0, 0.1, 0.14].urdf" # STD DRONE
+                urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, -0.38, -0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 6.28319, -3].urdf" # STD DRONE
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.15, -0.275, -0.275, 0.6, 0.14, 0.12, 0.12, 0.1, 1, 0, 0.1, 0.14].urdf"  # SMALLER DRONE
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.45, 0.1125, -0.15, -0.2, 0.4, 0.2, 0.1, 0.08, 0.16, 1, 10, 0.1, 0.18, 2, 2, 3, 0].urdf"
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.142857, -0.15, -0.2, 0.4, 0.2, 0.16, 0.16, 0.16, 1, 10, 0.1, 0.16, 2, 1.5, 3, 0].urdf"
@@ -358,7 +357,7 @@ class WingedDroneEnv:
         self.joint_velocity = torch.zeros((self.num_envs, self.num_servos), device=self.device, dtype=torch.float32)
         self.thurst = torch.zeros((self.num_envs, 1), device=self.device, dtype=torch.float32)
         self.nan_envs = torch.zeros((self.num_envs,), device=self.device, dtype=torch.int64)
-        self.curr_limit = 80
+        self.curr_limit = 120
 
         self.set_angle_limit(self.curr_limit)  # set initial angle limit
 
@@ -434,9 +433,9 @@ class WingedDroneEnv:
         if self.growing_forest:
             dens_min = self.env_cfg.get("dens_min", 0.0)  # densità minima
             if self.evaluation:
-                dens_max = self.env_cfg.get("dens_max", 5.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
             else:
-                dens_max = self.env_cfg.get("dens_max", 5.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
             width_x   = x_upper - x_lower
             expected_N = 0.5 * (dens_min + dens_max) * width_x
             num_trees  = int(math.ceil(expected_N))
@@ -454,17 +453,7 @@ class WingedDroneEnv:
             cylinders[..., 0] = xs
             cylinders[..., 1] = ys
             cylinders[..., 2].fill_(tree_height * 0.5)
-            if self.evaluation and self.num_envs == 1 and not self.unique_forests_eval:
-                for i in range(num_trees):
-                    self.scene.add_entity(
-                        gs.morphs.Cylinder(
-                            pos=cylinders[0, i].cpu().numpy(),
-                            radius=tree_radius,
-                            height=tree_height,
-                            collision=False,
-                            fixed=True
-                        )
-                    )
+
             self.cylinders_array = cylinders
             return
 
@@ -512,15 +501,15 @@ class WingedDroneEnv:
     def _resample_commands(self, envs_idx):
         self.commands[envs_idx, 0] = 0.0
 
-        z_tgt  = 10
+        z_tgt  = 5
 
         self.commands[envs_idx, 1] = z_tgt           # target height
-        v_tgt = gs_rand_float(6, 24,
+        v_tgt = gs_rand_float(5, 28,
                             (len(envs_idx),), self.device)
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 22.0
+            self.commands[envs_idx, 2] = 15.0
         return
     
     def set_angle_limit(self, limit_deg: float):
@@ -565,10 +554,6 @@ class WingedDroneEnv:
 
         if self.drone_name == "morphing_drone":
             self.rigid_solver.set_throttle(exec_throttle)
-            #aero_details, F, P = self.solver.apply_aero_forces(self.drone, exec_throttle, self.rigid_solver)
-
-            #self.alpha = aero_details['fuselage']['alpha']
-            #self.beta = aero_details['fuselage']['beta']
 
         elif self.drone_name == "bix3":
 
@@ -695,37 +680,24 @@ class WingedDroneEnv:
 
 
         # ---------------- observation actor ----------------
-        self.obs_buf = torch.cat(
-             [
-                 (self.base_pos[:, 2].unsqueeze(1) - 10)/10,
-                 self.base_quat,
-                 self.base_lin_vel[:, 0].unsqueeze(1)/20,
-                 self.base_lin_vel[:, 1].unsqueeze(1)/10,
-                 self.base_lin_vel[:, 2].unsqueeze(1)/10,
-                 #self.joint_position/self.joint_limits[1],
-                 1 - depth_actor / self.MAX_DISTANCE,
-                 self.last_actions[:, 0].unsqueeze(1),
-                 self.last_actions[:, 1:] / self.joint_limits[1],
-                 self.commands[:, 2].unsqueeze(1)/20,
-             ],
-             axis=-1,
-         )
-
+        obs = self._organize_observations(depth_actor)
+        obs = self._add_gaussian_obs_noise(obs)
+        self.obs_buf = obs
 
         # ---------------- privileged: actor + 40 extra ----------------
-        self.extras["observations"]["critic"] = self._make_critic_obs(depth_extra)
+        if self.use_wide:
+            self.extras["observations"]["critic"] = self._make_critic_obs(depth_extra)
 
         def fmt(tensor):
             # tensor: 1D tensor o lista di float
             return [f"{x:.3f}" for x in tensor.tolist()]
         
-        if self.evaluation:
-            #print("Time step:        ", fmt(self.episode_length_buf*self.dt))
+        if self.evaluation and self.num_envs == 1:
+            print("Time step:        ", fmt(self.episode_length_buf*self.dt))
             print("Position:         ", fmt(self.base_pos[0]))
             print("Velocity:         ", fmt(self.base_lin_vel[0]))
-            #print("Alpha:            ", fmt(self.alpha))
-            #print("Beta:             ", fmt(self.beta))
-            #print("Euler:            ", fmt(self.base_euler[0]))
+            print("Alpha:            ", fmt(self.alpha))
+            print("Beta:             ", fmt(self.beta))
             print("Depth:            ", fmt(self.depth[0]))
             print("Actions:          ", fmt(self.actions[0]))
             print("Joint Position:   ", fmt(self.joint_position[0]))
@@ -802,6 +774,96 @@ class WingedDroneEnv:
         self.reset_idx(self.reset_buf.nonzero(as_tuple=False).flatten())
 
         return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
+
+
+    def _organize_observations(self, depth_actor: torch.Tensor) -> torch.Tensor:
+        """
+        Build the observation vector in one place.
+        Does NOT add noise; noise is handled by _add_gaussian_obs_noise.
+
+        Expected layout (matches your original step code):
+        [ z_norm(1) |
+            quat(4) |
+            lin_vel_norm(3: vx/20, vy/10, vz/10) |
+            depth_feat(NUM_SECTORS_ACTOR) |
+            last_throttle(1) |
+            last_joints_norm(num_actions-1) |
+            v_tgt_norm(1) ]
+        """
+        # Base scalars and vectors
+        z_norm   = (self.base_pos[:, 2].unsqueeze(1) - 10.0) / 10.0
+        quat     = self.base_quat
+        vx_norm  = self.base_lin_vel[:, 0].unsqueeze(1) / 20.0
+        vy_norm  = self.base_lin_vel[:, 1].unsqueeze(1) / 10.0
+        vz_norm  = self.base_lin_vel[:, 2].unsqueeze(1) / 10.0
+
+        # Depth (near = 1, far = 0), exactly as in your code
+        depth_feat = 1.0 - depth_actor / self.MAX_DISTANCE
+
+        # Previous actions (same normalization as in your code)
+        last_thr   = self.last_actions[:, 0].unsqueeze(1)                 # in [0, 1]
+        last_jnts  = self.last_actions[:, 1:] / self.joint_limits[1]      # in [-1, 1] roughly
+
+        # Commanded forward speed (normalized like your code)
+        v_tgt_norm = self.commands[:, 2].unsqueeze(1) / 20.0
+
+        obs = torch.cat([
+            z_norm,                 # 1
+            quat,                   # 4
+            vx_norm, vy_norm, vz_norm,  # 3
+            depth_feat,             # NUM_SECTORS_ACTOR
+            last_thr,               # 1
+            last_jnts,              # num_actions - 1
+            v_tgt_norm,             # 1
+        ], dim=1)
+
+        # Sanity check: keep config consistent with the built vector
+        if obs.shape[1] != self.num_obs:
+            raise RuntimeError(f"num_obs mismatch: got {obs.shape[1]}, expected {self.num_obs}")
+
+        return obs
+
+    def _add_gaussian_obs_noise(self, obs: torch.Tensor) -> torch.Tensor:
+        """
+        Multiplicative noise per feature:
+        obs *= (1 + N(0, std_feature))
+        Le std provengono da obs_cfg["noise_std"] con chiavi:
+        {"z","quat","vel","depth","last_thr","last_jnts","v_tgt"} (mancanti => 0.0)
+        """
+        if not self.obs_cfg.get("add_noise", False):
+            return obs
+
+        ns = self.obs_cfg.get("noise_std", {})
+        get = lambda k: float(ns.get(k, 0.0))
+
+        B = obs.shape[0]
+        i = 0
+
+        # z (1)
+        if get("z") != 0.0:
+            obs[:, i:i+1] *= (1.0 + torch.randn((B, 1), device=self.device) * get("z"))
+        i += 1
+
+        # quat (4)
+        if get("quat") != 0.0:
+            obs[:, i:i+4] *= (1.0 + torch.randn((B, 4), device=self.device) * get("quat"))
+        i += 4
+
+        # vel (3)
+        if get("vel") != 0.0:
+            obs[:, i:i+3] *= (1.0 + torch.randn((B, 3), device=self.device) * get("vel"))
+        i += 3
+
+        n_depth = self.NUM_SECTORS_ACTOR
+        if get("depth") != 0.0:
+            depth_feat = obs[:, i:i+n_depth]            # vicino=1, lontano=0
+            scale = 4.0 * (1.0 - depth_feat)      # 1→5 quando si va da vicino a lontano
+            std = get("depth") * scale                   # std: base→5× alla max distance
+            obs[:, i:i+n_depth] *= (1.0 + torch.randn((B, n_depth), device=self.device) * std)
+        i += n_depth
+
+        return obs
+
 
     def _extract_thrust_tensor(self):
         """
@@ -1276,6 +1338,7 @@ class WingedDroneEnv:
         reward = torch.exp(-0.5 * ((x - 1.0) / sigma) ** 2)                      # (E,)
         return progress/20                    # (E,)
     '''
+
     def _reward_progress(self, sigma: float = 0.15):
         """
         Reward gaussiano centrato su v_tgt.
@@ -1297,7 +1360,7 @@ class WingedDroneEnv:
         # reward gaussiano (massimo = 1 in x = 1)
         reward = torch.exp(-0.5 * ((x - 1.0) / sigma) ** 2)                # (E,)
         return reward
-    
+
     def _reward_obstacle(self):
         """
         Reward basato sulla prossimità agli ostacoli,
@@ -1324,7 +1387,7 @@ class WingedDroneEnv:
         # Penalizza l'altezza del drone
         dist = torch.square(self.base_pos[:, 2] - self.commands[:, 1])
         height = torch.zeros_like(dist, device=self.device, dtype=torch.float32)
-        height[self.base_pos[:, 2]<7] = dist[self.base_pos[:, 2]<7]
+        height[self.base_pos[:, 2]<5] = dist[self.base_pos[:, 2]<5]
         #dist_lat = torch.square(self.base_pos[:, 1])
         #lat = torch.zeros_like(dist_lat, device=self.device, dtype=torch.float32)
         #lat[torch.abs(self.base_pos[:, 1])>40] = dist_lat[torch.abs(self.base_pos[:, 1])>40] * 0.02
