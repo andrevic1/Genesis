@@ -120,10 +120,6 @@ class WingedDroneEnv:
         base_pos_np = self.base_init_pos.cpu().numpy()
         base_quat_np = self.base_init_quat.cpu().numpy()
 
-        aero_noise = self.env_cfg.get("aero_noise", False)
-        sigma0 = self.env_cfg.get("aero_noise_sigma0", 0.02)
-        noise_k = self.env_cfg.get("aero_noise_k",      0.3)  # (E,)
-
        # camera
         self.camera_res = env_cfg.get("camera_res", (2560, 1920))
         self.camera_pos = env_cfg.get("camera_pos", (-5.0, 0.0, 2.0))
@@ -151,20 +147,21 @@ class WingedDroneEnv:
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.45, 0.1125, -0.15, -0.2, 0.4, 0.2, 0.1, 0.08, 0.16, 1, 10, 0.1, 0.18, 2, 2, 3, 0].urdf"
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.142857, -0.15, -0.2, 0.4, 0.2, 0.16, 0.16, 0.16, 1, 10, 0.1, 0.16, 2, 1.5, 3, 0].urdf"
                 #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.142857, -0.15, -0.2, 0.4, 0.2, 0.16, 0.16, 0.16, 1, 0, 0.1, 0.16, 2.5, 2, 2, -1].urdf"
-                self.drone = self.scene.add_entity(gs.morphs.URDF(
-                file=urdf_file,
-                pos=base_pos_np, quat=base_quat_np,
-                collision=False, merge_fixed_links=True,
-                links_to_keep=[
-                    "aero_frame_fuselage",
-                    "aero_frame_left_wing_prop",  "aero_frame_left_wing_free",
-                    "aero_frame_right_wing_prop", "aero_frame_right_wing_free",
-                    "aero_frame_elevator_left",   "aero_frame_elevator_right",
-                    "aero_frame_rudder",
-                    "elevator_left", "elevator_right","rudder",
-                    "prop_frame_fuselage_0",
-                    "fuselage","left_wing","right_wing",
-                ],
+
+            self.drone = self.scene.add_entity(gs.morphs.URDF(
+            file=urdf_file,
+            pos=base_pos_np, quat=base_quat_np,
+            collision=False, merge_fixed_links=True,
+            links_to_keep=[
+                "aero_frame_fuselage",
+                "aero_frame_left_wing_prop",  "aero_frame_left_wing_free",
+                "aero_frame_right_wing_prop", "aero_frame_right_wing_free",
+                "aero_frame_elevator_left",   "aero_frame_elevator_right",
+                "aero_frame_rudder",
+                "elevator_left", "elevator_right","rudder",
+                "prop_frame_fuselage_0",
+                "fuselage","left_wing","right_wing",
+            ],
             ))
             servo_joint_names = [
                 "joint_0_sweep_left_wing",   # nuovo
@@ -509,7 +506,7 @@ class WingedDroneEnv:
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 15.0
+            self.commands[envs_idx, 2] = 10.0
         return
     
     def set_angle_limit(self, limit_deg: float):
