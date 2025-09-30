@@ -55,7 +55,7 @@ class GeometryParams:
     hinge_le_ratio: float = 0.14
     sweep_multi: float = 1.0
     twist_multi: float = 1.0
-    cl_alpha_2d: float = 2 * math.pi
+    cl_alpha_2d: float = 2
     alpha0_2d: float = 0.0   # [rad]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -158,6 +158,7 @@ class UrdfMaker:
             density_scale  = 1.0
             prop_radius    = 0.10
             alpha0_2d_rad  = alpha0_2d_deg * math.pi / 180.0
+            cl_alpha_2d = cl_alpha_2d * math.pi
 
             prm = GeometryParams(
                 wing_span=wing_span,
@@ -664,6 +665,6 @@ if __name__ == "__main__":
         0.0,           # dihedral [deg]
         0.25,          # hinge_le_ratio
         2.0, 2.5,      # sweep, twist multipliers
-        2*math.pi, -3.0 # cl_alpha_2d, alpha0_2d [deg]
+        2, -3.0 # cl_alpha_2d, alpha0_2d [deg]
     ]
     print("URDF written to:", UrdfMaker(genome).create_urdf())

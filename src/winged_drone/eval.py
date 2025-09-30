@@ -1225,9 +1225,9 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("-e","--exp_name", default="drone-forest")
     p.add_argument("--ckpt",  type=int, default=300)
-    p.add_argument("--envs",  type=int, default=4096)
+    p.add_argument("--envs",  type=int, default=2048)
     p.add_argument("--vmin",  type=float, default=6.0)
-    p.add_argument("--vmax",  type=float, default=28.0)
+    p.add_argument("--vmax",  type=float, default=24.0)
     p.add_argument("--gpu",   default="cuda")
     args = p.parse_args()
 
@@ -1261,7 +1261,7 @@ if __name__ == "__main__":
         show_viewer=False, eval=True
     )
 
-    noise_sigma = 0.0
+    noise_sigma = 0.05
     env.rigid_solver.noise_sigma_mag = noise_sigma
     env.rigid_solver.noise_sigma_dir = noise_sigma
 

@@ -240,7 +240,7 @@ class WingedDroneEnv:
             else:
                 self.rigid_solver._aero_log    = False                      # ② logga α,β,lift,drag
             self.rigid_solver.add_target(self.drone, urdf_file=urdf_file)   # ③ attiva aerodinamica
-            self.span = (self.rigid_solver.area[1]/self.rigid_solver.chord[1]) * 2.0 + (self.rigid_solver.area[2]/self.rigid_solver.chord[2]) * 2.0 + (self.rigid_solver.area[0]/self.rigid_solver.chord[0])
+            self.span = self.rigid_solver.tip_to_tip
             self.rigid_solver._enable_noise = True
             
         print(f"WING SPAN: {self.span} m")
@@ -501,12 +501,12 @@ class WingedDroneEnv:
         z_tgt  = 5
 
         self.commands[envs_idx, 1] = z_tgt           # target height
-        v_tgt = gs_rand_float(5, 28,
+        v_tgt = gs_rand_float(6, 24,
                             (len(envs_idx),), self.device)
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 10.0
+            self.commands[envs_idx, 2] = 12.0
         return
     
     def set_angle_limit(self, limit_deg: float):
@@ -1322,7 +1322,7 @@ class WingedDroneEnv:
         return crash_rew / (self.dt * 100)
     
     def _reward_energy(self):
-        energy_rew = self.power_consumption() / (self.base_lin_vel[:, 0].clamp(min=3.0) * self.dt)
+        energy_rew = self.power_consumption() / (10 * self.dt) #(self.base_lin_vel[:, 0].clamp(min=3.0) * self.dt)
         return energy_rew
     '''
     def _reward_progress(self, sigma: float = 0.2):
