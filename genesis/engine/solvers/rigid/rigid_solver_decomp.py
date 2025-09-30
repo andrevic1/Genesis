@@ -280,21 +280,21 @@ class RigidSolver(Solver):
         self._aero_base = dict(
             rho             = 1.225,
             cl_alpha_2d     = 2*ti.math.pi,
-            alpha_stall_deg = 10.0,
+            alpha_stall_deg = 12.0,
             alpha0_2d       = -3.0*ti.math.pi/180,
             alpha0_2d_fus   = 0.0,
             cd0             = 0.05,
             cd0_fus         = 0.25,
             m_smooth        = 0.2,
-            max_thrust      = 4.0,
+            max_thrust      = 7.0,
             cp_start        = 0.25,
             cp_end          = 0.50,
             cg_to_chord     = 0.31,
             prop_cutoff_hz  = 1.0,
-            k_eps_tail      = 0.10,
-            k_slip_fus      = 0.2,
-            k_slip_tail     = 0.1,
-            k_slip_wing     = 0.5,
+            k_eps_tail      = 1.0,
+            k_slip_fus      = 0.0,
+            k_slip_tail     = 1.0,
+            k_slip_wing     = 1.0,
             kappa_prop      = 0.01,
         )
         self._aero_names  = tuple(self._aero_base.keys())
@@ -408,14 +408,6 @@ class RigidSolver(Solver):
                 f[b] = val
             self._param[name] = f
             setattr(self, name, f)        # accesso diretto: self.rho[b]
-
-
-    def add_aero_param_noise(self, sigma, env_idx: int | None = None):
-       # add taichi gaussian noise with ens_idx lenght to aerodynamic parameters
-        # self.cl_alpha_2d += sigma * self.cl_alpha_2d[env_idx] * ti.random.normal(
-        #    shape=
-
-        return
 
     # ======================================================================
     # 2) add_target
@@ -812,7 +804,7 @@ class RigidSolver(Solver):
         if kind == 0:
             cd0 = self.cd0_fus[b]
         cl_a = self.cl_alpha_2d[b] * AR / (2 + ti.sqrt(AR * AR + 4))
-        ref   = self.alpha0_2d_fus[b] if (kind == 0 or kind == 3) else self.alpha0_2d[b]
+        ref   = self.alpha0_2d_fus[b] if (kind == 0 or kind == 2 or kind == 3) else self.alpha0_2d[b]
         cl_lin= cl_a * (alpha - ref)
         cd_lin= cd0 + cl_lin * cl_lin / (ti.math.pi * AR)
         cl_st = 2 * ti.sin(alpha) * ti.cos(alpha)

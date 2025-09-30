@@ -44,7 +44,7 @@ def get_train_cfg(exp_name, max_iterations):
     la policy, e i parametri del runner.
     """
     train_cfg_dict = {
-        "num_steps_per_env": 15,
+        "num_steps_per_env": 15, # 100
         "save_interval": 200,
         "runner_class_name": "OnPolicyRunner",
         "empirical_normalization": True,
@@ -55,7 +55,7 @@ def get_train_cfg(exp_name, max_iterations):
             "class_name": "PPO",
             "clip_param": 0.2, # 0.2
             "desired_kl": 0.02, # 0.02
-            "entropy_coef": 0.001, # 0.005
+            "entropy_coef": 0.001,
             "gamma": 0.995,
             "lam": 0.97,
             "learning_rate": 0.0001, # 0.001
@@ -70,22 +70,21 @@ def get_train_cfg(exp_name, max_iterations):
         "policy": {
             "class_name": "ActorCriticTanh", # "ActorCriticRecurrent", "ActorCritic"
             "activation": "elu",
-            "actor_hidden_dims": [64, 64, 64], # [256, 256, 256]
-            "critic_hidden_dims": [64, 64, 64], # [256, 256, 256]
+            "actor_hidden_dims": [64, 64], # [256, 256, 256]
+            "critic_hidden_dims": [64, 64], # [256, 256, 256]
             "init_noise_std": 0.65, # 1.0
             "rnn_type": "lstm",
             "rnn_hidden_size": 64, # 256
             "rnn_num_layers": 1, # 1
             "max_servo": 1,         # ≈ 20°
-            "max_throttle": 1
-
+            "max_throttle": 1,
         },
         "runner": {
             "algorithm_class_name": "PPO",
             "checkpoint": -1,
             "experiment_name": exp_name,
             "load_run": -1,
-            "log_interval": 100,
+            "log_interval": 1,
             "max_iterations": max_iterations,
             "policy_class_name": "ActorCriticTanh", # "ActorCriticRecurrent", "ActorCritic"
             "record_interval": -1,
@@ -128,7 +127,7 @@ def get_cfgs():
         "visualize_camera": True,
         "max_visualize_FPS": 100,
         # Foresta
-        "num_trees": 400,
+        "num_trees": 1000,
         "num_trees_eval": 200,
         "tree_radius": 0.75,
         "tree_height": 100.0,
@@ -144,28 +143,31 @@ def get_cfgs():
         "aero_noise":         True,
         "aero_noise_sigma0":  0.03,   # varianza base   (2 % del modulo)
         "aero_noise_k":       0.15,    # incremento per rad di |α|+|β|
-        "use_wide": True,
     }
     obs_cfg = {
         "num_obs": 29,
-        "obs_scales": {
-            "zpos": 0.01,
-            "lin_vel": 0.1,
-            "ang_vel": 0.2,
-            "depth": 1/60,
+        "add_noise": True,   # or False for evaluation
+        "noise_std": {
+            "z": 0.05,
+            "quat": 0.05,
+            "vel": 0.05,
+            "depth": 0.05,
+            "last_thr": 0.0,
+            "last_jnts": 0.0,
+            "v_tgt": 0.0,
         },
     }
     reward_cfg = {
         "reward_scales": {
             "smooth": -2e-2, # -3e-3,
-            "angular": -1e-2, # -2e-2,
+            "angular": -5e-3, # -2e-2,
             "crash": -40, #-20.0,
-            "obstacle": -1e-1, # -1e-1,
-            "energy": -2e-4,#-1e-3,
+            "obstacle": -5e-2, # -1e-1,
+            "energy": -1e-4,#-1e-3,
             "progress": 3e-1, # 4e-1
-            "height": -1e-2, #-5e-3,
+            "height": -4e-2, #-5e-3,
             "success": 0, #0
-            "cosmetic": -5e-1, # 0.0
+            "cosmetic": -3e-1, # 0.0
         },
     }
     command_cfg = {
@@ -183,7 +185,6 @@ def train(
     parent_exp: str | None = None,
     parent_ckpt: int | None = None,
     privileged: bool | None = True,
-    disable_commanded_velocity: bool | None = False,
     log_root: Path | None = None,
 ):
     gpu_id = os.getenv("CUDA_VISIBLE_DEVICES","0").split(",")[0]
@@ -207,7 +208,6 @@ def train(
     # Ottieni le configurazioni per l'environment e per il training
     env_cfg, obs_cfg, reward_cfg, command_cfg = get_cfgs()
     env_cfg["use_wide"] = privileged
-    env_cfg["disable_commanded_velocity"] = bool(disable_commanded_velocity)
 
     train_cfg = get_train_cfg(exp_name, max_iterations)
 

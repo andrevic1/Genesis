@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from rsl_rl.modules.actor_critic_recurrent import ActorCriticRecurrent
+from rsl_rl.modules.actor_critic import ActorCritic
 from torch.distributions import Normal
 import math
 
@@ -10,7 +11,7 @@ class ActorCriticTanh(ActorCriticRecurrent):
         self.max_servo    = max_servo
         self.max_throttle = max_throttle
         self._LOG2        = math.log(2.)
-
+        self.recurrency    = True
     # ------------------------------------------------ helper
     def _scale(self, a):
         thr = 0.5 * (a[..., :1] + 1) * self.max_throttle
@@ -25,9 +26,14 @@ class ActorCriticTanh(ActorCriticRecurrent):
 
     # ------------------------------------------------ overrides
     def act(self, obs, deterministic=False, masks=None, hidden_states=None):
-        inp = self.memory_a(obs, masks, hidden_states)
-        self.update_distribution(inp.squeeze(0))
+        if self.recurrency:
+            # === Comportamento originale (ricorrente) ===
+            inp = self.memory_a(obs, masks, hidden_states)
+        else:
+            # === Feed-forward puro (no RNN) ===
+            inp = obs          # MLP dell’attore
 
+        self.update_distribution(inp.squeeze(0))
         z = self.distribution.mean if deterministic else self.distribution.rsample()
         a = torch.tanh(z)                         # (-1,1)
         act = self._scale(a)
