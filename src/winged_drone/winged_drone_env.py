@@ -149,7 +149,7 @@ class WingedDroneEnv:
                 "prop_frame_fuselage_0",
             ]
 
-
+        self.nominal_mass = float(sum(link.get_mass() for link in self.drone.links))
          # generate forests
         self._generate_forests()
         # initialize forest_ids
@@ -182,7 +182,7 @@ class WingedDroneEnv:
             else:
                 self.rigid_solver._aero_log    = False                      # ② logga α,β,lift,drag
             self.rigid_solver.add_target(self.drone, urdf_file=urdf_file)   # ③ attiva aerodinamica
-            self.span = (self.rigid_solver.area[1]/self.rigid_solver.chord[1]) * 2.0 + (self.rigid_solver.area[2]/self.rigid_solver.chord[2]) * 2.0 + (self.rigid_solver.area[0]/self.rigid_solver.chord[0])
+            self.span = self.rigid_solver.tip_to_tip
             self.rigid_solver._enable_noise = True
             
 
@@ -333,7 +333,7 @@ class WingedDroneEnv:
         tree_radius = self.env_cfg.get("tree_radius", 1.0)
         tree_height = self.env_cfg.get("tree_height", 50.0)
 
-        x_lower, x_upper = self.env_cfg.get("x_lower", 0),  self.env_cfg.get("x_upper", 250)
+        x_lower, x_upper = self.env_cfg.get("x_lower", 0),  self.env_cfg.get("x_upper", 150)
         y_lower, y_upper = self.env_cfg.get("y_lower", -50), self.env_cfg.get("y_upper", 50)
 
         # In evaluation lo spazio lungo x è più esteso
@@ -355,7 +355,7 @@ class WingedDroneEnv:
             if self.evaluation:    
                 dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
             else:
-                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 3.0)  # densità massima
             width_x   = x_upper - x_lower
             expected_N = 0.5 * (dens_min + dens_max) * width_x
             num_trees  = int(math.ceil(expected_N))
@@ -421,7 +421,7 @@ class WingedDroneEnv:
         self.commands[envs_idx, 0] = 0.0
         z_tgt  = 5
         self.commands[envs_idx, 1] = z_tgt           # target height
-        v_tgt = gs_rand_float(6, 28,
+        v_tgt = gs_rand_float(6, 24,
                             (len(envs_idx),), self.device)
         self.commands[envs_idx, 2] = v_tgt           # target roll
 

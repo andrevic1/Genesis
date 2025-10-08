@@ -88,11 +88,21 @@ def run_eval(env: WingedDroneEnv, policy, watch_env_idxs: Iterable[int]=()) -> T
               for i in watch_env_idxs}
     E_int = torch.zeros(len(watch_env_idxs), device=dev)
 
+    # NEW: light all-env sampling buffer for joint colormap
+    traces_all = {  # per-env lists, later compacted to arrays
+        "s":      [[] for _ in range(B)],
+        "j_pos":  [[] for _ in range(B)],
+        "v_cmd":  None,  # filled below
+    }
+    sample_every = max(1, int(round(0.5 / float(dt))))  # sample ~2 Hz  # NEW
+
     obs, _ = env.reset()
     x0 = env.base_pos[:, 0].clone()
+    traces_all["v_cmd"] = env.commands[:, 2].detach().cpu().numpy()  # NEW
 
     print(f"Running evaluation on {B} envs – watch={watch_env_idxs}")
 
+    step_i = 0  # NEW
     while not done.all():
         act = policy(obs)
         obs, _, term, _ = env.step(act)
@@ -104,6 +114,16 @@ def run_eval(env: WingedDroneEnv, policy, watch_env_idxs: Iterable[int]=()) -> T
         dx_acc[alive] = env.base_pos[alive, 0] - x0[alive]
         P = env.power_consumption()  # instantaneous power [W]
         E_acc[alive] += P[alive] * dt  # integrate power → energy [J]
+
+        # NEW: low-rate logging for ALL envs (for joint colormap)
+        if (step_i % sample_every) == 0:
+            s_all = (env.base_pos[:, 0] - x0).detach().cpu().numpy()
+            jp_all = env.joint_position.detach().cpu().numpy()
+            for idx in range(B):
+                if done[idx] or term[idx] or nan_indices[idx]:
+                    continue
+                traces_all["s"][idx].append(float(s_all[idx]))
+                traces_all["j_pos"][idx].append(jp_all[idx])
 
         # Detailed logging only for watched envs
         for k, idx in enumerate(watch_env_idxs):
@@ -143,16 +163,40 @@ def run_eval(env: WingedDroneEnv, policy, watch_env_idxs: Iterable[int]=()) -> T
             else:
                 final_reason[j] = 3
         done |= term | nan_indices
+        step_i += 1  # NEW
 
     # Aggregate per-env metrics
     safe = (~nan_indices) & (dx_acc>1)
     v_mean = (dx_acc[safe] / t_acc[safe].clamp_min(1e-6)).detach().cpu().numpy()  # mean vel along x
     E_tot  = (E_acc[safe] / dx_acc[safe].clamp_min(1e-6)).detach().cpu().numpy()  # J/m (cost of transport)
+    mg = float(getattr(env, "nominal_mass", 1.0)) * 9.81
+    COT   = ((E_acc[~nan_indices] / dx_acc[~nan_indices].clamp_min(1e-6)) / max(mg, 1e-6)).cpu().numpy()
+
     v_cmd  = env.commands[safe, 2].detach().cpu().numpy()                         # commanded speed
     progress = dx_acc[safe].detach().cpu().numpy()                                # meters progressed
     final_reason = final_reason[safe].detach().cpu().numpy().astype(np.int8)
 
-    return v_mean, E_tot, v_cmd, progress, final_reason
+    # NEW: compact traces_all to arrays
+    if hasattr(env, "joint_position"):
+        n_j = int(env.joint_position.shape[1])
+    else:
+        n_j = 0
+    for i in range(B):
+        if i >= len(traces_all["s"]): break
+        s_list = traces_all["s"][i]
+        jp_list = traces_all["j_pos"][i]
+        traces_all["s"][i] = np.asarray(s_list, dtype=float) if s_list else np.empty((0,), dtype=float)
+        traces_all["j_pos"][i] = (np.vstack(jp_list).astype(float)
+                                  if jp_list else np.empty((0, n_j), dtype=float))
+    # Also filter traces_all down to the 'safe' envs so lengths match metrics
+    if len(traces_all["s"]) == B:
+        keep = safe.detach().cpu().numpy().astype(bool)
+        traces_all["s"]     = [traces_all["s"][i]     for i in range(B) if keep[i]]
+        traces_all["j_pos"] = [traces_all["j_pos"][i] for i in range(B) if keep[i]]
+        traces_all["v_cmd"] = np.asarray(traces_all["v_cmd"])[keep]
+
+    # Return the new traces_all as an extra output (minimal signature change)
+    return v_mean, COT, v_cmd, progress, final_reason, traces_all  # NEW
 
 
 # ──────────────────────────────────────────────────────────────
@@ -184,6 +228,104 @@ def _moving_avg_vs_vcmd(x_vcmd: np.ndarray, y: np.ndarray, win_frac: float = 0.0
         y_std[i]    = float(np.std(seg, ddof=0))
 
     return x_ord, y_smooth, y_std
+
+
+# ──────────────────────────────────────────────────────────────
+#  3b) JOINT-POSITION COLORMAP (NEW)
+# ──────────────────────────────────────────────────────────────
+def plot_joint_mean_colormap(traces_all: Dict[str, Any],
+                             dof: str,
+                             out: str = "joint_mean_colormap.png",
+                             s_bins: int = 24,
+                             v_bins: int = 16) -> None:
+    """Heatmap over (s × v_cmd) of mean joint position [deg].
+    Args:
+      traces_all: dict with keys "s": list[np.ndarray], "j_pos": list[np.ndarray], "v_cmd": np.ndarray
+      dof: "sweep" → +deg ~ (j0 - j1)/2 ; "twist" → +deg ~ -(j2 + j3)/2
+      out: output filename
+    """
+    v_cmd = np.asarray(traces_all.get("v_cmd", []), dtype=float)
+    if v_cmd.size == 0:
+        print("⚠️  plot_joint_mean_colormap: empty v_cmd — skipping.")
+        return
+
+    v_min, v_max = float(np.nanmin(v_cmd)), float(np.nanmax(v_cmd))
+    env_n = v_cmd.size
+
+    # find max s across envs to set bin edges
+    max_s = 0.0
+    for i in range(env_n):
+        s_i = traces_all["s"][i]
+        if s_i.size:
+            max_s = max(max_s, float(np.nanmax(s_i)))
+    if max_s <= 0.0:
+        print("⚠️  plot_joint_mean_colormap: no valid s — skipping.")
+        return
+
+    s_edges = np.linspace(0.0, max_s, s_bins + 1, dtype=float)
+    v_edges = np.linspace(v_min, v_max, v_bins + 1, dtype=float)
+
+    heat  = np.full((v_bins, s_bins), np.nan, dtype=float)
+    count = np.zeros_like(heat, dtype=int)
+
+    for env_idx in range(env_n):
+        s_arr  = traces_all["s"][env_idx]
+        jp_arr = traces_all["j_pos"][env_idx]
+        if s_arr.size == 0 or jp_arr.size == 0:
+            continue
+
+        if dof == "sweep":
+            behaviour = np.rad2deg(0.5 * (jp_arr[:, 0] - jp_arr[:, 1]))   # + = forward sweep
+        elif dof == "twist":
+            behaviour = np.rad2deg(-0.5 * (jp_arr[:, 2] + jp_arr[:, 3]))  # + = upward twist
+        else:
+            raise ValueError(f"dof must be 'sweep' or 'twist', got {dof!r}")
+
+        bins_s = np.searchsorted(s_edges, s_arr, side="right") - 1
+        bins_s[bins_s < 0] = 0
+        bins_s[bins_s >= s_bins] = s_bins - 1
+
+        v_val = float(v_cmd[env_idx])
+        v_i = np.searchsorted(v_edges, v_val, side="right") - 1
+        v_i = int(np.clip(v_i, 0, v_bins - 1))
+
+        # accumulate mean per s-bin for this env into global (v_i, s_bin)
+        for b in range(s_bins):
+            msk = (bins_s == b)
+            if not np.any(msk):
+                continue
+            m = float(np.nanmean(behaviour[msk]))
+            if np.isnan(heat[v_i, b]):
+                heat[v_i, b] = m
+                count[v_i, b] = 1
+            else:
+                # incremental mean over envs that map to same (v_i, b)
+                c = count[v_i, b]
+                heat[v_i, b] = (heat[v_i, b] * c + m) / (c + 1)
+                count[v_i, b] = c + 1
+
+    heat_masked = np.ma.masked_invalid(heat)
+    if not np.isfinite(np.nanmin(heat)) or not np.isfinite(np.nanmax(heat)):
+        print("⚠️  plot_joint_mean_colormap: all-NaN heatmap — skipping.")
+        return
+
+    plt.figure(figsize=(9.0, 5.0))
+    extent = [s_edges[0], s_edges[-1], v_edges[0], v_edges[-1]]
+    im = plt.imshow(heat_masked, origin="lower", aspect="auto",
+                    extent=extent, interpolation="nearest",
+                    cmap="turbo",
+                    vmin=float(np.nanmin(heat)), vmax=float(np.nanmax(heat)))
+    plt.colorbar(im, label="mean joint position [deg]")
+    plt.xlabel("Distance along forest  s  [m]")
+    plt.ylabel("Commanded velocity  v_cmd  [m/s]")
+    if dof == "sweep":
+        plt.title("Joint-position colormap — sweep (+ forward)")
+    else:
+        plt.title("Joint-position colormap — twist (+ upward)")
+    plt.tight_layout()
+    plt.savefig(out, dpi=150)
+    plt.close()
+    print(f"✓ joint colormap saved to {out}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -254,17 +396,17 @@ def evaluation(exp_name: str,
     policy = runner.get_inference_policy(device=gs.device)
 
     # Rollout
-    v_mean, E_tot, v_cmd, progress, final_reason = run_eval(env, policy)
+    v_mean, COT, v_cmd, progress, final_reason, traces_all = run_eval(env, policy)  # NEW
     try:
         gs.destroy()
     except Exception:
         pass
 
     # Filter valid data
-    mask = np.isfinite(v_cmd) & np.isfinite(v_mean) & np.isfinite(E_tot) & np.isfinite(progress)
+    mask = np.isfinite(v_cmd) & np.isfinite(v_mean) & np.isfinite(COT) & np.isfinite(progress)
     x = np.asarray(v_cmd)[mask]      # v_cmd (smoothing axis)
     v = np.asarray(v_mean)[mask]     # achieved mean speed along x
-    E = np.asarray(E_tot)[mask]      # energy per meter (J/m)
+    E = np.asarray(COT)[mask]      # energy per meter (J/m)
     P = np.asarray(progress)[mask]   # meters progressed
 
     # Moving-averages computed *vs v_cmd*
@@ -295,10 +437,25 @@ def evaluation(exp_name: str,
 
     # Save total_plot in logs/ea/<exp_name>/ and, if possible, also in
     # ANALYSIS_DIR/runs/<row_id>/ (matching by exp_name in the CSV)
+    joint_paths = {}  # NEW
     try:
         plot_path = log_dir / "total_plot.png"
         total_plot(v_mean=v, E_tot=E, v_cmd=x, progress=P,
                    win_frac=win_frac, out=str(plot_path))
+        # NEW: also render joint-position colormaps
+        sweep_path = log_dir / "joint_heatmap_sweep.png"
+        twist_path = log_dir / "joint_heatmap_twist.png"
+        try:
+            plot_joint_mean_colormap(traces_all, "sweep", out=str(sweep_path))
+            joint_paths["sweep"] = str(sweep_path)
+        except Exception as _e:
+            print(f"[eval] joint sweep colormap failed: {_e}")
+        try:
+            plot_joint_mean_colormap(traces_all, "twist", out=str(twist_path))
+            joint_paths["twist"] = str(twist_path)
+        except Exception as _e:
+            print(f"[eval] joint twist colormap failed: {_e}")
+
         # Best-effort copy to numbered run directory
         csv_path = ANALYSIS_DIR / "deap_temp.csv"
         if csv_path.is_file():
@@ -310,15 +467,24 @@ def evaluation(exp_name: str,
                 run_dir = ANALYSIS_DIR / "runs" / f"{row_id:05d}"
                 run_dir.mkdir(parents=True, exist_ok=True)
                 try:
-                    # Rigenera il plot con titolo "0000x - …" direttamente nella cartella numerata
+                    # Re-generate plot with a custom title directly in the numbered folder
                     total_plot(v_mean=v, E_tot=E, v_cmd=x, progress=P,
                                win_frac=win_frac,
                                out=str(run_dir / "total_plot.png"),
                                title=f"{row_id:05d} - Performance (vs MA(v))")
                 except Exception:
-                    # fallback: copia il file già renderizzato
+                    # fallback: copy the file already rendered
                     import shutil
                     shutil.copy2(plot_path, run_dir / "total_plot.png")
+                # NEW: copy colormaps if present
+                try:
+                    import shutil
+                    if "sweep" in joint_paths and Path(joint_paths["sweep"]).is_file():
+                        shutil.copy2(joint_paths["sweep"], run_dir / "joint_heatmap_sweep.png")
+                    if "twist" in joint_paths and Path(joint_paths["twist"]).is_file():
+                        shutil.copy2(joint_paths["twist"], run_dir / "joint_heatmap_twist.png")
+                except Exception as _e:
+                    print(f"[eval] copying joint colormaps failed: {_e}")
     except Exception as e:
         print(f"[eval] total_plot save failed: {e}")
 
@@ -327,6 +493,7 @@ def evaluation(exp_name: str,
             p_s=p_ma, v_s=v_ma, E_s=E_ma,
             v_cmd_s=x_for_v, v_mean_s=v_ma, E_tot_s=E_ma,
             max_p=max_p,
+            joint_colormaps=joint_paths,   # NEW: paths to saved heatmaps
         )
         return top_vel, top_eff, top_prog, final_reason, extra
 

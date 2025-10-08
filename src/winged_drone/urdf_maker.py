@@ -7,7 +7,7 @@ This module builds a drone URDF from a *structured genome* of **15 parameters**:
 
  0) wing_span                     [m]
  1) wing_aspect_ratio             = span / chord
- 2) fus_length                    [m]
+ 2) fus_len_ratio                = fus_length / wing_span
  3) cg_x_ratio                    = fus_cg_x / fus_length
  4) attach_x_ratio                = wing_attach_x / fus_length
  5) elevator_span                 [m]
@@ -90,7 +90,7 @@ class UrdfMaker:
 
     # “Mass model” densities (kg/m³) and constants
     _RHO_FUS_STRUCT  = 20.0
-    _FUS_FIXED_MASS  = 0.250              # e.g. battery, avionics
+    _FUS_FIXED_MASS  = 0.300              # e.g. battery, avionics
     _BATTERY_SIZE    = (0.10, 0.05, 0.05) # box for inertia (10×5×5 cm)
     _RHO_WING = 20
     _RHO_ELEV = 20
@@ -145,13 +145,14 @@ class UrdfMaker:
             if len(seq) != 15:
                 raise ValueError("Expected a 15-value genome sequence.")
             # Unpack genome
-            (wing_span, wing_AR, fus_length, cg_ratio, attach_ratio,
-             elev_span, elev_AR, rudd_span, rudd_AR,
-             dihedral_deg, hinge_le_ratio, sweep_multi, twist_multi,
-             cl_alpha_2d, alpha0_2d_deg) = seq
+            (wing_span, wing_AR, fus_len, cg_ratio, attach_ratio,
+            elev_span, elev_AR, rudd_span, rudd_AR,
+            dihedral_deg, hinge_le_ratio, sweep_multi, twist_multi,
+            cl_alpha_2d, alpha0_2d_deg) = seq
 
             # Derive physical quantities
             wing_chord     = wing_span / max(wing_AR, 1e-6)
+            fus_length     = fus_len 
             elevator_chord = elev_span / max(elev_AR, 1e-6)
             rudder_chord   = rudd_span / max(rudd_AR, 1e-6)
             fus_cg_x       = - cg_ratio    * fus_length
@@ -659,7 +660,7 @@ if __name__ == "__main__":
     # A simple genome example (values chosen for sanity, not performance)
     genome = [
         0.70, 3.5,     # wing span, AR -> chord ≈ 0.20
-        0.73, -0.38,   # fus length, cg_x_ratio -> cg_x ≈ -0.277
+        1, -0.38,   # fus length, cg_x_ratio -> cg_x ≈ -0.277
         -0.38,         # attach_x_ratio -> attach_x ≈ -0.277
         0.18, 1.3,     # elevator span, AR -> chord ≈ 0.138
         0.16, 1.3,     # rudder   span, AR -> chord ≈ 0.123

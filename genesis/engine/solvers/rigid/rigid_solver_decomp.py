@@ -284,9 +284,9 @@ class RigidSolver(Solver):
             alpha0_2d       = -3.0*ti.math.pi/180,
             alpha0_2d_fus   = 0.0,
             cd0             = 0.05,
-            cd0_fus         = 0.25,
+            cd0_fus         = 0.75,
             m_smooth        = 0.2,
-            max_thrust      = 7.0,
+            max_thrust      = 5.0,
             cp_start        = 0.25,
             cp_end          = 0.50,
             cg_to_chord     = 0.31,
@@ -343,6 +343,9 @@ class RigidSolver(Solver):
         # --- fusoliera ---------------------------------------------------
         sx, _, sz = box("fuselage")
         S_fus, c_fus = sx * sz * 4 * 4, sz * 4
+        sp_fus = sx * 4
+        self.S_perp_fus = sx * sx * 4 * 4 * ti.math.pi / 4
+
         cg_x = xyz("fuselage")[0]
 
         self.cg_fus_local_x = cg_x
@@ -373,24 +376,25 @@ class RigidSolver(Solver):
         diam_prop = box("prop_frame_fuselage_0")[0]
         self.prop_radius = diam_prop / 2.0
 
+        self.tip_to_tip = 2 * (sp_wp + sp_wf) + sp_fus
+        self.AR_wing = self.tip_to_tip / (c_wp)
+        self.AR_tail = 2 * sp_el / c_el
+
         self._geom = [
             #  kind: 0=fusoliera | 1=ala | 2=elevator | 3=timone | 4=elica
-            (S_fus, S_fus / c_fus / c_fus, c_fus, 0),
+            (self.S_perp_fus, S_fus / c_fus / c_fus, c_fus, 0),
 
-            (S_lw_prop,  AR_lw_prop,   c_wp, 1),
-            (S_lw_free,  AR_lw_free,   c_wf, 1),
-            (S_rw_prop,  AR_rw_prop,   c_wp, 1),
-            (S_rw_free,  AR_rw_free,   c_wf, 1),
+            (S_lw_prop,  self.AR_wing,   c_wp, 1),
+            (S_lw_free,  self.AR_wing,   c_wf, 1),
+            (S_rw_prop,  self.AR_wing,   c_wp, 1),
+            (S_rw_free,  self.AR_wing,   c_wf, 1),
 
-            (S_el, AR_el, c_el, 2),    # elevator left
-            (S_er, AR_er, c_el, 2),    # elevator right
+            (S_el, self.AR_tail, c_el, 2),    # elevator left
+            (S_er, self.AR_tail, c_el, 2),    # elevator right
 
             (S_r,  AR_r,  c_r,  3),    # rudder
             (0.0,  1.0,  0.0,  4),    # propeller (placeholder)
         ]
-
-        # AR wing total
-        self.AR_wing = (sp_wp + sp_wf) / (c_wp)
 
         print(f"AerodynamicSolver: parsed URDF {self._urdf_path.name}")
         print(f"AerodynamicSolver: found {len(self._geom)} surfaces:")
@@ -519,12 +523,7 @@ class RigidSolver(Solver):
         tq = torch.zeros_like(fb)          # stessa shape [B, L, 3]
         thrust = fb[:, -1, 2]              # componente +Z in body (spinta)
         tq[:, -1, 2] = -(self.kappa_prop.to_torch(device=self._aero_device)) * thrust
-        '''
-        if self.B == 1:
-            for i in range(len(self._aero_link_idx)):
-                print(f"Applying on {self._aero_frames[i]} aero force {fb[0, i]} at cp {cp[0, i]}")
-            print(f"Applying on {self._aero_frames[-1]} aero torque {tq[0, -1]}")
-        '''
+
         self.apply_external_force_link_frame(force=fb, pos=cp, links_idx=self._aero_link_idx)
         self.apply_external_torque_link_frame(torque=tq,
                                             links_idx=self._aero_link_idx)
@@ -800,9 +799,7 @@ class RigidSolver(Solver):
         if kind == 3:
             alpha = beta
         cd0 = self.cd0[b]
-        # if fusoliera use cd0 = cd0_fus
-        if kind == 0:
-            cd0 = self.cd0_fus[b]
+
         cl_a = self.cl_alpha_2d[b] * AR / (2 + ti.sqrt(AR * AR + 4))
         ref   = self.alpha0_2d_fus[b] if (kind == 0 or kind == 2 or kind == 3) else self.alpha0_2d[b]
         cl_lin= cl_a * (alpha - ref)
@@ -810,7 +807,14 @@ class RigidSolver(Solver):
         cl_st = 2 * ti.sin(alpha) * ti.cos(alpha)
         cd_st = 2 * ti.sin(alpha) * ti.sin(alpha)
         blend     = self._smooth(b, alpha)
-        return (1 - blend) * cl_lin + blend * cl_st, (1 - blend) * cd_lin + blend * cd_st
+        cl = (1 - blend) * cl_lin + blend * cl_st
+        cd = (1 - blend) * cd_lin + blend * cd_st
+
+        if kind == 0:
+            cl = 0.0
+            cd = self.cd0_fus[b]
+
+        return cl, cd
 
     @ti.func
     def _rot_y(self, theta):

@@ -6,7 +6,7 @@
 # 1) Removed all "DISABLE_VCMD" branches and CLI flag; a single evaluation path.
 # 2) Cache-hit now triggers *re-training* (with policy inheritance from the cached ckpt).
 # 3) Added reward-curve extraction from TensorBoard and plots (incl. reward/speed plot).
-# 4) CSV writes rew_10pct .. rew_100pct.
+# 4) CSV writes rew_05pct .. rew_100pct.
 # 5) Gene CHOICES replaced with the ones from the provided file.
 # 6) Comments are in English.
 # 7) Per-individual artifacts are organized under ANALYSIS_DIR/runs/<row_id>/ with
@@ -108,13 +108,13 @@ def train_rl(exp, urdf_file, n_envs, train_iters, parent_exp=None, parent_ckpt=N
     )
 
 
-def _tb_extract_reward_curve(exp: str, train_iters: int, n_points: int = 10, win_frac: float = 0.1) -> dict:
+def _tb_extract_reward_curve(exp: str, train_iters: int, n_points: int = 20, win_frac: float = 0.1) -> dict:
     """
     Read TensorBoard scalar "Train/mean_reward" from logs/ea/<exp>/ and compute
-    smoothed reward at 10%, …, 100% of training. Uses a centered moving-average
+    smoothed reward at 5%, …, 100% of training. Uses a centered moving-average
     window equal to win_frac of total training steps; falls back to the nearest
     event if the window is empty.
-    Returns keys: rew_10pct .. rew_100pct (floats). Missing TB → {}.
+    Returns keys: rew_05pct .. rew_100pct (floats). Missing TB → {}.
     """
     log_dir = _LOG_ROOT_ENV / "ea" / exp
     ea = event_accumulator.EventAccumulator(str(log_dir))
@@ -133,15 +133,16 @@ def _tb_extract_reward_curve(exp: str, train_iters: int, n_points: int = 10, win
     win_steps = max(1, int(round(train_iters * win_frac)))
     half = win_steps // 2
     out = {}
-    for frac in range(1, n_points + 1):
-        target = int(round(train_iters * frac / n_points))
-        lo, hi = target - half, target + half
-        mask = (steps >= lo) & (steps <= hi)
-        if mask.any():
-            out[f"rew_{frac*10}pct"] = float(np.nanmean(vals[mask]))
-        else:
-            idx = int(np.argmin(np.abs(steps - target)))
-            out[f"rew_{frac*10}pct"] = float(vals[idx])
+     for frac in range(1, n_points + 1):
+         target = int(round(train_iters * frac / n_points))
+         pct = int(round(100 * frac / n_points))  # 5,10,...,100
+         lo, hi = target - half, target + half
+         mask = (steps >= lo) & (steps <= hi)
+         if mask.any():
+             out[f"rew_{pct:02d}pct"] = float(np.nanmean(vals[mask]))
+         else:
+             idx = int(np.argmin(np.abs(steps - target)))
+             out[f"rew_{pct:02d}pct"] = float(vals[idx])
     return out
 
 
@@ -451,7 +452,7 @@ class PostAnalyzer:
         - Requires TensorBoard-derived columns: rew_10pct ... rew_100pct.
         """
         # Ensure required columns exist
-        cols = [f"rew_{k}pct" for k in range(10, 101, 10)]
+        cols = [f"rew_{k:02d}pct" for k in range(5, 101, 5)]
         if not all(c in self.df.columns for c in cols):
             print("No rew_xxpct columns – skip reward/speed plot")
             return
@@ -463,7 +464,7 @@ class PostAnalyzer:
         # Earliest % where reward >= 90% of final reward (per row)
         def _steps90(row):
             tgt = 0.9 * row["final_reward"]
-            for pct in range(10, 101, 10):
+            for pct in range(5, 101, 5):
                 val = row.get(f"rew_{pct}pct", np.nan)
                 if np.isfinite(val) and val >= tgt:
                     return pct
@@ -695,39 +696,62 @@ class PostAnalyzer:
 # │  Helpers – chromosome & DB                                  │
 # ╰─────────────────────────────────────────────────────────────╯
 class Chromosome_Drone:
-    # Allowed choices for each gene (ported from the provided file)
+    """Encodes the discrete design spaces for each gene."""
+
+    @staticmethod
+    def lspace(start: float, stop: float, delta: float) -> list[float]:
+        """
+        Inclusive linspace with fixed step `delta` (can be negative).
+        Rounds values based on the number of decimals in `delta`
+        to avoid floating artifacts in CSVs.
+        """
+        assert delta != 0.0, "delta must be non-zero"
+        # Compute number of points (inclusive), robust to FP noise
+        steps = abs((stop - start) / delta)
+        n = int(round(steps)) + 1
+        arr = np.linspace(start, stop, n)
+        # Infer decimals from delta (e.g., 0.03 -> 2, 0.5 -> 1)
+        from decimal import Decimal
+        try:
+            decimals = max(0, -Decimal(str(abs(delta))).normalize().as_tuple().exponent)
+        except Exception:
+            decimals = 6
+        arr = np.round(arr, decimals)
+        return arr.tolist()
+
     _CHOICES = [
-        # 0: wing_span (m)
-        [0.35, 0.38, 0.41, 0.44, 0.47, 0.50, 0.53, 0.56, 0.59, 0.62, 0.65, 0.68, 0.71],
-        # 1: wing_aspect_ratio (span/chord)
-        [1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
-        # 2: fus_length (m)
-        [0.35, 0.38, 0.41, 0.44, 0.47, 0.50, 0.53, 0.56, 0.59, 0.62, 0.65, 0.68, 0.71],
-        # 3: cg_x_ratio (fus_cg_x / fus_length)
-        [0.7, 0.6, 0.5, 0.4, 0.3, 0.2],
-        # 4: attach_x_ratio (wing_attach_x / fus_length)
-        [0.2, 0.25, 0.3, 0.35, 0.40, 0.45, 0.5, 0.55, 0.6],
-        # 5: elevator_span (m)
-        [0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
-        # 6: elevator_aspect_ratio
-        [1.0, 1.5, 2.0, 2.5, 3.0],
-        # 7: rudder_span (m)
-        [0.10, 0.12, 0.14, 0.16, 0.18, 0.20],
-        # 8: rudder_aspect_ratio
-        [1.0, 1.5, 2.0, 2.5, 3.0],
-        # 9: dihedral_deg (degrees)
-        [-20.0, -15.0, -10.0, 5.0, 0.0, 5.0, 10.0, 15.0, 20.0],
-        # 10: hinge_le_ratio (fraction of chord)
-        [0.10, 0.14, 0.18, 0.22, 0.26, 0.30, 0.34, 0.38, 0.42],
-        # 11: sweep_multiplier
-        [1.5, 2.0, 2.5, 3.0],
-        # 12: twist_multiplier
-        [1.5, 2.0, 2.5, 3.0],
-        # 13: cl_alpha_2d
+        # 0: wing_span (m) → 0.40..0.60 step 0.02
+        lspace.__func__(0.40, 0.70, 0.02),
+        # 1: wing_aspect_ratio (span/chord) → 1.5..5.0 step 0.5
+        lspace.__func__(1.5, 5.0, 0.25),
+        # 2: fus_len
+        lspace.__func__(0.40, 0.70, 0.02),
+        # 3: cg_x_ratio (fus_cg_x / fus_length) → 0.60..0.30 step -0.05
+        lspace.__func__(0.30, 0.70, 0.05),
+        # 4: attach_x_ratio (wing_attach_x / fus_length) → 0.30..0.70 step 0.05
+        lspace.__func__(0.30, 0.70, 0.05),
+        # 5: elevator_span (m) → 0.10..0.30 step 0.02
+        lspace.__func__(0.10, 0.30, 0.02),
+        # 6: elevator_aspect_ratio → 1.0..3.0 step 0.5
+        lspace.__func__(1.0, 3.0, 0.25),
+        # 7: rudder_span (m) → 0.10..0.20 step 0.02
+        lspace.__func__(0.10, 0.20, 0.02),
+        # 8: rudder_aspect_ratio → 1.0..3.0 step 0.5
+        lspace.__func__(1.0, 3.0, 0.25),
+        # 9: dihedral_deg (degrees) → -20..20 step 5  (no duplicates)
+        lspace.__func__(-20.0, 20.0, 5.0),
+        # 10: hinge_le_ratio (fraction of chord) → 0.18..0.36 step 0.03
+        [0.25],
+        # 11: sweep_multiplier → 1.5..3.5 step 0.5
+        lspace.__func__(1.0, 4.0, 0.5),
+        # 12: twist_multiplier → 1.5..3.5 step 0.5
+        lspace.__func__(1.0, 4.0, 0.5),
+        # 13: cl_alpha_2d → single fixed value
         [2.0],
-        # 14: alpha0_2d (degrees)
-        [0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0],
+        # 14: alpha0_2d (degrees) → 0.0..-5.0 step -0.5
+        lspace.__func__(0.0, -5.0, -0.5),
     ]
+
 
     def random(self):
         """Pick a random value *within the list* of each gene."""
@@ -738,7 +762,6 @@ class Chromosome_Drone:
         mins = [min(opts) for opts in cls._CHOICES]
         maxs = [max(opts) for opts in cls._CHOICES]
         return mins, maxs
-
 
 class FitnessDB:
     def __init__(self, name: str, n_obj: int):
@@ -825,11 +848,12 @@ class FitnessDB:
             *[f"ff_{i}" for i in range(self.n_obj)],
             "generation", "exp_name", "train_it", "max_p",
             "minimal_p",
+            "parent_idx_a","parent_idx_b",
             "vel_v","vel_E","vel_P",
             "eff_v","eff_E","eff_P",
             "prog_v","prog_E","prog_P",
             # reward curve (10%..100%)
-            *[f"rew_{k}pct" for k in range(10, 101, 10)],
+            *[f"rew_{k:02d}pct" for k in range(5, 101, 5)],
         ]
         return pd.DataFrame([{c: np.nan for c in cols}])
 
@@ -868,10 +892,10 @@ class CodesignDEAP:
     TRAIN_ITERS_INHERIT   = 500
     TRAIN_ENVS            = 16384
     EVAL_ENVS             = 4096
-    VMIN, VMAX            = 6.0, 28.0
+    VMIN, VMAX            = 6.0, 24.0
     WEIGHTS               = (+1.0, +1.0, +1.0)  # maximize vel, -energy
 
-    def __init__(self, n_pop=12, n_gen=20, cx_pb=0.90, mut_pb=0.4,
+    def __init__(self, n_pop=12, n_gen=20, cx_pb=0.85, mut_pb=0.3,
                  csv=None, inherit_policy=False,
                  use_dynamic_p=True, fixed_p=300.0, pct_above=50.0):
         assert n_pop % 4 == 0
@@ -992,6 +1016,9 @@ class CodesignDEAP:
             print(f"\n════════ Generation {g}/{self.n_gen} ════════")
 
             # 1) parent-selection
+            # Tag each parent with its index in the current population (stable within generation)
+            for _idx, _ind in enumerate(pop):
+                _ind._pop_idx = _idx
             parents   = tools.selTournamentDCD(pop, len(pop))
             offspring = [self.tb.clone(p) for p in parents]
 
@@ -1100,8 +1127,15 @@ class CodesignDEAP:
                 eff_v=eff_d["mean_v"],  eff_E=-eff_d["mean_E"],  eff_P=eff_d["mean_progress"],
                 prog_v=prog_d["mean_v"], prog_E=-prog_d["mean_E"], prog_P=prog_d["mean_progress"],
                 generation=self._gen,
+                parent_idx_a=int(getattr(ind, "parent_idx_a", -1)),
+                parent_idx_b=int(getattr(ind, "parent_idx_b", -1)),
             ))
             _row_id, _run_dir = self.db.insert(list(ind), ff_final, meta)
+            # Keep row_id on the individual so future generations can reference it if needed
+            try:
+                ind.row_id = int(_row_id)
+            except Exception:
+                pass
             ind._persisted = True
         feasible = not (vel_d["mean_v"] == 0.0 and eff_d["mean_E"] == 100.0)
         status = "OK " if feasible else "FAIL"
@@ -1150,6 +1184,15 @@ class CodesignDEAP:
                 if infos:
                     c1.parent_exp, c1.parent_ckpt = random.choice(infos)
                     c2.parent_exp, c2.parent_ckpt = random.choice(infos)
+            # Record parent indices for lineage tracking in CSV
+            pA = parents[i]
+            pB = parents[i+1]
+            idxA = int(getattr(pA, "_pop_idx", -1))
+            idxB = int(getattr(pB, "_pop_idx", -1))
+            # Store indices on both children
+            c1.parent_idx_a, c1.parent_idx_b = idxA, idxB
+            c2.parent_idx_a, c2.parent_idx_b = idxA, idxB
+
 
     def _after_generation(self, pop):
         """Update stats, create plots, and print a generation summary."""

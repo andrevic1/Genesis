@@ -55,13 +55,13 @@ def get_train_cfg(exp_name, max_iterations):
             "class_name": "PPO",
             "clip_param": 0.2, # 0.2
             "desired_kl": 0.02, # 0.02
-            "entropy_coef": 0.001,
+            "entropy_coef": 0.002,
             "gamma": 0.995,
             "lam": 0.97,
             "learning_rate": 0.0001, # 0.001
             "max_grad_norm": 0.3, # 1.0
             "num_learning_epochs": 3, # 6
-            "num_mini_batches": 8, # 8
+            "num_mini_batches": 16, # 8
             "schedule": "adaptive",
             "use_clipped_value_loss": True,
             "value_loss_coef": 0.5, # 1.0
@@ -72,7 +72,7 @@ def get_train_cfg(exp_name, max_iterations):
             "activation": "elu",
             "actor_hidden_dims": [64, 64], # [256, 256, 256]
             "critic_hidden_dims": [64, 64], # [256, 256, 256]
-            "init_noise_std": 0.65, # 1.0
+            "init_noise_std": 0.5, # 1.0
             "rnn_type": "lstm",
             "rnn_hidden_size": 64, # 256
             "rnn_num_layers": 1, # 1
@@ -161,10 +161,10 @@ def get_cfgs():
         "reward_scales": {
             "smooth": -2e-2, # -3e-3,
             "angular": -5e-3, # -2e-2,
-            "crash": -40, #-20.0,
+            "crash": -20, #-20.0,
             "obstacle": -5e-2, # -1e-1,
             "energy": -1e-4,#-1e-3,
-            "progress": 3e-1, # 4e-1
+            "progress": 2e-1, # 4e-1
             "height": -4e-2, #-5e-3,
             "success": 0, #0
             "cosmetic": -3e-1, # 0.0
