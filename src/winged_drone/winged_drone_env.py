@@ -21,7 +21,7 @@ class WingedDroneEnv:
 
     BASE_OBS_SIZE = 8          # z-pos(1)+quat(4)+lin_vel_norm(1)
     THROTTLE_SIZE = 1
-    MAX_DISTANCE = 40.0
+    MAX_DISTANCE = 30.0
     SHORT_RANGE = 0.0
     NUM_SECTORS_ACTOR  = 20      # 80 deg
     CONE_ACTOR_DEG     = 80.0
@@ -328,6 +328,11 @@ class WingedDroneEnv:
         for name in self.reward_scales.keys():
             self.reward_functions[name] = getattr(self, "_reward_" + name)
             self.episode_sums[name] = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
+        self.reward_names = list(self.reward_scales.keys())
+        self.last_reward_components = torch.zeros(
+            (self.num_envs, len(self.reward_names)), device=self.device, dtype=torch.float32
+        )
+        self.last_reward_total = torch.zeros((self.num_envs,), device=self.device, dtype=torch.float32)
 
         # initialize buffers
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=torch.float32)
@@ -410,7 +415,7 @@ class WingedDroneEnv:
         tree_radius = self.env_cfg.get("tree_radius", 1.0)
         tree_height = self.env_cfg.get("tree_height", 50.0)
 
-        x_lower, x_upper = self.env_cfg.get("x_lower", 0),  self.env_cfg.get("x_upper", 250)
+        x_lower, x_upper = self.env_cfg.get("x_lower", 0),  self.env_cfg.get("x_upper", 150)
         y_lower, y_upper = self.env_cfg.get("y_lower", -50), self.env_cfg.get("y_upper", 50)
 
         # In evaluation lo spazio lungo x è più esteso
@@ -432,7 +437,7 @@ class WingedDroneEnv:
             if self.evaluation:
                 dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
             else:
-                dens_max = self.env_cfg.get("dens_max", 4.0)  # densità massima
+                dens_max = self.env_cfg.get("dens_max", 3.0)  # densità massima
             width_x   = x_upper - x_lower
             expected_N = 0.5 * (dens_min + dens_max) * width_x
             num_trees  = int(math.ceil(expected_N))
@@ -452,6 +457,18 @@ class WingedDroneEnv:
             cylinders[..., 2].fill_(tree_height * 0.5)
 
             self.cylinders_array = cylinders
+            if self.evaluation and not self.unique_forests_eval:
+                for i in range(num_trees):
+                    self.scene.add_entity(
+                        gs.morphs.Cylinder(
+                            pos=cylinders[0, i].cpu().numpy(),
+                            radius=tree_radius,
+                            height=tree_height,
+                            collision=False,
+                            fixed=True
+                        )
+                    )
+
             return
 
         # ========================================================================
@@ -506,7 +523,7 @@ class WingedDroneEnv:
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 12.0
+            self.commands[envs_idx, 2] = 13.0
         return
     
     def set_angle_limit(self, limit_deg: float):
@@ -660,10 +677,18 @@ class WingedDroneEnv:
 
         # compute reward
         self.rew_buf[:] = 0.0
-        for name, reward_func in self.reward_functions.items():
-            rew = reward_func() * self.reward_scales[name] * self.dt * 100 / 2
-            self.rew_buf += rew
-            self.episode_sums[name] += rew
+        if self.reward_names:
+            self.last_reward_components.zero_()
+            for i, name in enumerate(self.reward_names):
+                rew_comp = self.reward_functions[name]() * self.reward_scales[name] * self.dt * 100 / 2
+                self.rew_buf += rew_comp
+                self.episode_sums[name] += rew_comp
+                self.last_reward_components[:, i] = rew_comp
+            self.last_reward_total[:] = self.rew_buf
+        else:
+            # fallback safe (nel caso improbabile di rewards vuote)
+            self.last_reward_components = torch.zeros_like(self.last_reward_components)
+            self.last_reward_total.zero_()
 
         self.last_actions[:] = self.actions[:]
         # ----------- slice depth per actor -----------------
@@ -854,7 +879,7 @@ class WingedDroneEnv:
         n_depth = self.NUM_SECTORS_ACTOR
         if get("depth") != 0.0:
             depth_feat = obs[:, i:i+n_depth]            # vicino=1, lontano=0
-            scale = 4.0 * (1.0 - depth_feat)      # 1→5 quando si va da vicino a lontano
+            scale = 3.0 * (1.0 - depth_feat)      # 1→5 quando si va da vicino a lontano
             std = get("depth") * scale                   # std: base→5× alla max distance
             obs[:, i:i+n_depth] *= (1.0 + torch.randn((B, n_depth), device=self.device) * std)
         i += n_depth

@@ -637,9 +637,9 @@ class CodesignDEAP:
 if __name__ == "__main__":
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pop", type=int, default=4)
-    ap.add_argument("--gen", type=int, default=3)
-    ap.add_argument("--train_it", type=int, default=30)
+    ap.add_argument("--pop", type=int, default=40)
+    ap.add_argument("--gen", type=int, default=30)
+    ap.add_argument("--train_it", type=int, default=300)
     ap.add_argument("--inherit", action="store_true", default=False,)
     args = ap.parse_args()
 
