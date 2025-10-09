@@ -143,11 +143,7 @@ class WingedDroneEnv:
         if self.drone_name == "morphing_drone":
             if urdf_file == None:
                 urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.7, 3.5, 0.73, -0.38, -0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 6.28319, -3].urdf" # STD DRONE
-                #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.15, -0.275, -0.275, 0.6, 0.14, 0.12, 0.12, 0.1, 1, 0, 0.1, 0.14].urdf"  # SMALLER DRONE
-                #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.45, 0.1125, -0.15, -0.2, 0.4, 0.2, 0.1, 0.08, 0.16, 1, 10, 0.1, 0.18, 2, 2, 3, 0].urdf"
-                #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.142857, -0.15, -0.2, 0.4, 0.2, 0.16, 0.16, 0.16, 1, 10, 0.1, 0.16, 2, 1.5, 3, 0].urdf"
-                #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 0.142857, -0.15, -0.2, 0.4, 0.2, 0.16, 0.16, 0.16, 1, 0, 0.1, 0.16, 2.5, 2, 2, -1].urdf"
-
+                #urdf_file = "/home/andrea/Documents/genesis/Genesis/genesis/assets/urdf/mydrone/[0.5, 3, 0.53, -0.38, -0.38, 0.18, 1.3, 0.16, 1.3, 0, 0.25, 2, 2.5, 2, -3].urdf"
             self.drone = self.scene.add_entity(gs.morphs.URDF(
             file=urdf_file,
             pos=base_pos_np, quat=base_quat_np,
@@ -457,17 +453,6 @@ class WingedDroneEnv:
             cylinders[..., 2].fill_(tree_height * 0.5)
 
             self.cylinders_array = cylinders
-            if self.evaluation and not self.unique_forests_eval:
-                for i in range(num_trees):
-                    self.scene.add_entity(
-                        gs.morphs.Cylinder(
-                            pos=cylinders[0, i].cpu().numpy(),
-                            radius=tree_radius,
-                            height=tree_height,
-                            collision=False,
-                            fixed=True
-                        )
-                    )
 
             return
 
@@ -523,7 +508,7 @@ class WingedDroneEnv:
         self.commands[envs_idx, 2] = v_tgt           # target roll
 
         if self.evaluation:
-            self.commands[envs_idx, 2] = 13.0
+            self.commands[envs_idx, 2] = 16.0
         return
     
     def set_angle_limit(self, limit_deg: float):

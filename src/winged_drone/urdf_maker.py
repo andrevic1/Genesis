@@ -657,8 +657,8 @@ class UrdfMaker:
 if __name__ == "__main__":
     # A simple genome example (values chosen for sanity, not performance)
     genome = [
-        0.70, 3.5,     # wing span, AR -> chord ≈ 0.20
-        0.73, -0.38,   # fus length, cg_x_ratio -> cg_x ≈ -0.277
+        0.50, 3,     # wing span, AR -> chord ≈ 0.20
+        0.53, -0.38,   # fus length, cg_x_ratio -> cg_x ≈ -0.277
         -0.38,         # attach_x_ratio -> attach_x ≈ -0.277
         0.18, 1.3,     # elevator span, AR -> chord ≈ 0.138
         0.16, 1.3,     # rudder   span, AR -> chord ≈ 0.123

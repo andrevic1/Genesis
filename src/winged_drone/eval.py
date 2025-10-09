@@ -1303,7 +1303,7 @@ if __name__ == "__main__":
     E_tot_m, prog_m   = E_tot, progress
 
     # curve smussate
-    win_frac = 0.03
+    win_frac = 0.05
 
     xm_s, p_s,  _  = _moving_avg(v_mean_m, prog_m, win_frac)
     idx_p = np.argmax(p_s)        # progress max

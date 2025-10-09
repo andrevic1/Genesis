@@ -151,7 +151,7 @@ def get_cfgs():
             "obstacle": -5e-2, # -1e-1,
             "energy": -1e-4,#-1e-3,
             "progress": 2e-1, # 4e-1
-            "height": -1e-1, #-5e-3,
+            "height": -2e-1, #-5e-3,
             "success": 0, #0
             "cosmetic": -3e-1, # 0.0
         },

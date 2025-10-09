@@ -25,7 +25,7 @@ SUCCESS_TIME_SEC = 300.0          # volo minimo richiesto
 import math
 import numpy as np
 
-def compute_fov(pos_xy, yaw, roll, fov_angle_nom=30.0, fov_x_max=60.0, n_points=30):
+def compute_fov(pos_xy, yaw, roll, fov_angle_nom=40.0, fov_x_max=40.0, n_points=30):
     """
     Restituisce un array di punti che descrivono un settore circolare (cono) 
     di raggio fov_x_max e apertura angolare 2*alpha_eff, posizionato in pos_xy,
@@ -157,14 +157,13 @@ def create_overlay_video(cam_mp4: str,
     #  ▸ 3 colonne   [ videoCam | subplot | gap ]
     #  ▸ 6 righe     [5 subplot + 1 riga video top‑down]
     fig = plt.figure(figsize=(16, 9), dpi=dpi)
-    gs  = GridSpec(nrows=5, ncols=3,
-                   width_ratios =[1.8, 0.05, 1.0],
-                   height_ratios=[1.1, 1.1, 1.1, 1.1, 1.1],
-                   wspace=0.08, hspace=0.34)
+    gs  = GridSpec(nrows=6, ncols=3,
+                width_ratios =[1.8, 0.05, 1.0],
+                height_ratios=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+                wspace=0.08, hspace=0.34)
 
-    # --- assi video -------------------------------------------------------
     ax_cam = fig.add_subplot(gs[:3, 0]);  ax_cam.axis("off")
-    ax_td  = fig.add_subplot(gs[3:5 , 0]);  ax_td .axis("off")
+    ax_td  = fig.add_subplot(gs[4:6, 0]);  ax_td .axis("off")
 
     # --- assi serie temporali --------------------------------------------
     ax_T    = fig.add_subplot(gs[0, 2])   # Σ thrust
@@ -172,15 +171,42 @@ def create_overlay_video(cam_mp4: str,
     ax_J23  = fig.add_subplot(gs[2, 2])   # J2‑3
     ax_J45  = fig.add_subplot(gs[3, 2])   # J4‑5
     ax_VLIN = fig.add_subplot(gs[4, 2])   # vel. lineari
-    ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN]
+    ax_REW = fig.add_subplot(gs[5, 2])   # ✅ nuovo asse reward
+    ts_axes = [ax_T, ax_J01, ax_J23, ax_J45, ax_VLIN, ax_REW] 
 
     # ---------- dati ------------------------------------------------------
     t_all   = traj["time_steps"]
     thr_sum = traj["thrust"].sum(axis=1)          # (N,)
     jp      = traj["joint_positions"]             # (N,6)
     vlin    = traj["lin_vel"]                     # (N,3)
+    R_tot  = traj.get("reward_total", None)
+    R_comp = traj.get("reward_components", None)
+    R_names = traj.get("reward_names", None)
 
     # ---------- limiti + griglie -----------------------------------------
+
+    # Limiti e griglie
+    ax_REW.grid(True, lw=.3, alpha=.4)
+    ax_REW.set_xlabel("t [s]")
+    ax_REW.set_ylabel("reward")
+
+    # Linea reward totale
+    if R_tot is not None:
+        lnRtot, = ax_REW.plot([], [], lw=2.0, c="k", label="Reward Totale")
+    else:
+        lnRtot = None
+
+    # Linee per ciascuna componente
+    lnR_comp = []
+    if R_comp is not None and R_names is not None:
+        cmap = plt.get_cmap("tab20")
+        for i, nm in enumerate(R_names.tolist()):
+            ln, = ax_REW.plot([], [], lw=1.4, c=cmap(i % 20), label=str(nm))
+            lnR_comp.append(ln)
+        # legenda compatta in 2 colonne
+        ax_REW.legend(fontsize=8, frameon=False, loc="upper right", ncol=2)
+
+
     ax_T.set_ylim(0, 1)
     for ax in (ax_J01, ax_J23, ax_J45):
         ax.set_ylim(-0.3, 0.3)
@@ -251,6 +277,23 @@ def create_overlay_video(cam_mp4: str,
             lnVz.set_data(t_all[:idx+1], vlin[:idx+1, 2])
             lnVCOM.set_data(t_all[:idx+1], vel_commanded[:idx+1])
 
+            if lnRtot is not None:
+                lnRtot.set_data(t_all[:idx+1], R_tot[:idx+1])
+            if lnR_comp:
+                for j, ln in enumerate(lnR_comp):
+                    ln.set_data(t_all[:idx+1], R_comp[:idx+1, j])
+
+            if (R_tot is not None) or (R_comp is not None):
+                vals = []
+                if R_tot is not None:
+                    vals.append(R_tot[:idx+1])
+                if R_comp is not None:
+                    vals.append(R_comp[:idx+1].ravel())  # tutte le componenti, tutti i frame fin qui
+                all_vals = np.concatenate(vals) if vals else np.array([0.0], dtype=np.float32)
+                y_min = float(np.min(all_vals))
+                y_max = float(np.max(all_vals))
+                ax_REW.set_ylim(-y_max/2, y_max)
+
             # scorrimento asse x
             for ax in ts_axes:
                 ax.set_xlim(0, t_all[idx])
@@ -261,6 +304,111 @@ def create_overlay_video(cam_mp4: str,
     plt.close(fig)
 
 
+def create_camera_rewards_video(cam_mp4: str,
+                                traj: dict,
+                                out_mp4: str = "camera_rewards.mp4",
+                                dpi: int = 240):
+    """
+    Video 2: in alto la camera, sotto un plot grande con
+    reward cumulativa totale + tutte le componenti.
+    La legenda è posizionata fuori a destra.
+    """
+    import cv2, math
+    from matplotlib.animation import FFMpegWriter
+    from matplotlib.gridspec import GridSpec
+
+    # ---- dati traiettoria/reward -----------------------------------------
+    t_all   = traj["time_steps"]                       # (N,)
+    R_tot   = traj.get("reward_total", None)           # (N,)
+    R_comp  = traj.get("reward_components", None)      # (N, K)
+    R_names = traj.get("reward_names", None)           # (K,)
+
+    # ---- video camera -----------------------------------------------------
+    cap = cv2.VideoCapture(cam_mp4)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    nF  = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or len(t_all))
+    dt  = 1.0 / fps
+
+    # ---- layout figura: 2 righe (sotto più grande) -----------------------
+    fig = plt.figure(figsize=(16, 9), dpi=dpi)
+    gs  = GridSpec(nrows=2, ncols=1,
+                   height_ratios=[1.0, 1.8],  # plot sotto "grosso grosso"
+                   hspace=0.08)
+    ax_cam = fig.add_subplot(gs[0, 0]); ax_cam.axis("off")
+    ax_rew = fig.add_subplot(gs[1, 0])
+
+    # Spazio extra a destra per la legenda fuori dal plot
+    fig.subplots_adjust(right=0.82)
+
+    # primo frame camera
+    ok, frm = cap.read()
+    if not ok:
+        cap.release()
+        plt.close(fig)
+        raise RuntimeError(f"Impossibile leggere il video camera: {cam_mp4}")
+    im_cam = ax_cam.imshow(cv2.cvtColor(frm, cv2.COLOR_BGR2RGB))
+
+    # ---- linee reward -----------------------------------------------------
+    ax_rew.set_xlabel("t [s]")
+    ax_rew.set_ylabel("reward (cumul.)")
+    ax_rew.grid(True, lw=.3, alpha=.4)
+
+    ln_tot = None
+    ln_comp = []
+    if R_tot is not None:
+        (ln_tot,) = ax_rew.plot([], [], lw=2.2, c="k", label="Totale")
+    if R_comp is not None and R_names is not None:
+        cmap = plt.get_cmap("tab20")
+        for i, nm in enumerate(list(R_names)):
+            (ln,) = ax_rew.plot([], [], lw=1.6, c=cmap(i % 20), label=str(nm))
+            ln_comp.append(ln)
+
+    # legenda fuori dal plot (a destra)
+    ax_rew.legend(loc="center left", bbox_to_anchor=(1.01, 0.5),
+                  frameon=False, fontsize=10, ncol=1)
+
+    # ---- writer -----------------------------------------------------------
+    writer = FFMpegWriter(fps=fps, metadata=dict(artist="winged-drone"))
+    with writer.saving(fig, out_mp4, dpi=dpi):
+        # numero frame sincronizzato al tempo della traiettoria
+        nK = int(min(nF, math.ceil(t_all[-1] / dt)))
+        for k in range(nK):
+            if k > 0:
+                ok, frm = cap.read()
+                if not ok:
+                    break
+                im_cam.set_data(cv2.cvtColor(frm, cv2.COLOR_BGR2RGB))
+
+            t_now = k * dt
+            idx = max(np.searchsorted(t_all, t_now) - 1, 0)
+
+            # aggiorna linee reward
+            if ln_tot is not None:
+                ln_tot.set_data(t_all[:idx+1], R_tot[:idx+1])
+            for j, ln in enumerate(ln_comp):
+                ln.set_data(t_all[:idx+1], R_comp[:idx+1, j])
+
+            # ylim dinamico: MIN/MAX su TUTTE le reward finora (+10% padding)
+            vals = []
+            if R_tot is not None:
+                vals.append(R_tot[:idx+1])
+            if R_comp is not None:
+                vals.append(R_comp[:idx+1].ravel())
+            if vals:
+                allv = np.concatenate(vals)
+                y_min = float(np.min(allv))
+                y_max = float(np.max(allv))
+                if y_max == y_min:
+                    eps = (abs(y_max) + 1.0) * 1e-3
+                    y_min -= eps; y_max += eps
+                pad = 0.10 * abs(y_max)
+                ax_rew.set_ylim(-y_max - pad, y_max + pad)
+
+            ax_rew.set_xlim(0, t_all[idx])
+            writer.grab_frame()
+
+    cap.release()
+    plt.close(fig)
 
 
 def run_and_record(env, policy, show_video=False,
@@ -281,6 +429,9 @@ def run_and_record(env, policy, show_video=False,
         thrust_b = []
         joint_positions_b = []
         lin_vel_b = []
+        reward_total_b = []
+        reward_comp_b  = []
+        reward_names   = None
 
     if collect_video and env.rec_cam is not None and env.num_envs == 1:
         env.start_video(filename=video_cam_path, fps=int(1 / env.dt))
@@ -306,6 +457,14 @@ def run_and_record(env, policy, show_video=False,
         with torch.no_grad():
             act = policy(obs)
         obs, _, term, _ = env.step(act)
+
+        if B == 1:
+            if reward_names is None:
+                reward_names = env.reward_names  # cattura l’ordine dei nomi
+            comp_step = env.last_reward_components[0].detach().cpu().numpy()  # shape (K,)
+            tot_step  = float(comp_step.sum())
+            reward_total_b.append(tot_step)
+            reward_comp_b.append(comp_step)
 
         terminated = term.to(torch.bool)
         Nan_mask = torch.isnan(env.base_pos[:, 0])
@@ -388,6 +547,9 @@ def run_and_record(env, policy, show_video=False,
             lin_vel=np.vstack(lin_vel_b),
             time_steps=np.array(t_b),
             end_reason=final_reason[0],
+            reward_total=np.array(reward_total_b, dtype=np.float32),
+            reward_components=np.vstack(reward_comp_b).astype(np.float32),
+            reward_names=np.array(reward_names, dtype=object),
         )
         return stats, traj, cam_recording
     return stats, None, cam_recording
@@ -412,8 +574,6 @@ if __name__ == "__main__":
     with open(os.path.join(log_dir, "cfgs.pkl"), "rb") as f:
         env_cfg, obs_cfg, rew_cfg, cmd_cfg, train_cfg = pickle.load(f)
 
-    rew_cfg["reward_scales"] = {}
-
     env_cfg.update(dict(
     visualize_camera=False,
     visualize_target=False,
@@ -426,6 +586,15 @@ if __name__ == "__main__":
     base_init_pos=[-100, 0, 10.0],
     ))
 
+    # print all cfgs
+    print("\nEnvironment Configuration:")
+    print(env_cfg)
+    print("\nObservation Configuration:")
+    print(obs_cfg)
+    print("\nReward Configuration:")
+    print(rew_cfg)
+    print("\nCommand Configuration:")
+    print(cmd_cfg) 
 
     if args.episodes > 0:
         env1 = WingedDroneEnv(
@@ -484,6 +653,14 @@ if __name__ == "__main__":
                 out_mp4 = "camera_overlay.mp4"
             )
             print("✅  Video finale con HUD in camera_overlay.mp4")
+            print("Rendering camera + rewards …")
+            create_camera_rewards_video(
+                cam_mp4 = args.video_cam,
+                traj    = trajectories[0],
+                out_mp4 = "camera_rewards.mp4",
+                dpi     = 240
+            )
+            print(f"✅  Video camera+rewards salvato in camera_rewards.mp4")
 
     print(f"\n>>> Computing statistics on {args.stats_envs} envs")
     
